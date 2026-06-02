@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Study Manager</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="メインナビゲーション">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">SM</div>
+          <div>
+            <strong>Study Manager</strong>
+            <span>高校3年</span>
+          </div>
+        </div>
+        <nav id="side-nav" class="nav-list"></nav>
+      </aside>
+
+      <main class="main">
+        <section id="home-view" class="view active-view"></section>
+        <section id="calendar-view" class="view"></section>
+        <section id="todo-view" class="view"></section>
+        <section id="questions-view" class="view"></section>
+        <section id="import-view" class="view"></section>
+        <section id="settings-view" class="view"></section>
+      </main>
+    </div>
+
+    <nav id="bottom-nav" class="bottom-nav" aria-label="スマホナビゲーション"></nav>
+
+    <div id="class-sheet" class="sheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-close-sheet></div>
+      <aside class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+        <button class="sheet-close" data-close-sheet type="button" aria-label="閉じる">×</button>
+        <p id="sheet-period" class="section-kicker"></p>
+        <h2 id="sheet-title"></h2>
+        <div id="sheet-meta" class="sheet-meta"></div>
+        <div class="sheet-actions">
+          <label class="upload-action">板書写真を追加<input data-class-upload="board" type="file" accept="image/*,.pdf" /></label>
+          <label class="upload-action">ノート写真を追加<input data-class-upload="note" type="file" accept="image/*,.pdf" /></label>
+          <label class="upload-action">プリントを追加<input data-class-upload="print" type="file" accept="image/*,.pdf" /></label>
+          <button id="add-class-ai-job" class="ghost-button" type="button">AI処理待ちに追加</button>
+          <button class="primary-action" type="button">AIで問題生成</button>
+        </div>
+        <div class="generated-box">
+          <h3>生成済み問題</h3>
+          <p>要約・重要ポイント・問題はAI取り込み後にここへ表示します。</p>
+        </div>
+      </aside>
+    </div>
+
+    <div id="schedule-modal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" data-close-schedule-modal></div>
+      <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="schedule-modal-title">
+        <div class="modal-header">
+          <div>
+            <p id="schedule-modal-date" class="section-kicker"></p>
+            <h2 id="schedule-modal-title">24時間円グラフを作成</h2>
+          </div>
+          <button class="sheet-close" data-close-schedule-modal type="button" aria-label="閉じる">×</button>
+        </div>
+        <div id="schedule-editor"></div>
+      </section>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="./data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
