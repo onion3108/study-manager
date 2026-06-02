@@ -339,6 +339,9 @@ function mapAiJobs(jobRows, resultRows) {
       file_path: row.file_path,
       file_url: row.file_url,
       file_name: meta.file_name || meta.uploaded_file?.name,
+      original_file_name: meta.original_file_name || meta.file_name || meta.uploaded_file?.name,
+      storage_file_name: meta.storage_file_name,
+      storage_path: meta.storage_path || row.file_path,
       related_subject: row.subject || meta.related_subject,
       related_date: meta.related_date,
       related_period: meta.related_period,
@@ -377,6 +380,18 @@ function sanitizeFileName(name) {
     .replace(/[\\/:*?"<>|\s]+/g, "_")
     .replace(/_+/g, "_")
     .slice(0, 120);
+}
+
+function getSafeExtension(name) {
+  const match = String(name || "").match(/\.([a-zA-Z0-9]+)$/);
+  if (!match) return "";
+  return `.${match[1].toLowerCase()}`;
+}
+
+function createSafeStorageFileName(originalName) {
+  const ext = getSafeExtension(originalName);
+  const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  return `material_${id}${ext}`;
 }
 
 function requireSupabaseUser() {
@@ -455,6 +470,9 @@ function validateUploadPath(filePath, userId) {
   if (parts.length < 3 || parts[0] !== userId || !parts[1] || !parts[2]) {
     throw new Error(`file_pathが不正です。1階層目はuser.id、2階層目はjob_id、3階層目はfile_nameが必要です: ${filePath}`);
   }
+  if (!/^[a-zA-Z0-9_.-]+$/.test(parts[2])) {
+    throw new Error(`Invalid key: Storage上のファイル名は英数字・ハイフン・アンダースコアのみで保存してください: ${parts[2]}`);
+  }
 }
 
 async function verifyStorageBucketAccess(userId) {
@@ -490,6 +508,7 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
   const inputType = inputTypeForFile(file);
   let filePath = null;
   let fileUrl = null;
+  let storageFileName = null;
   const now = new Date().toISOString();
   const fileMeta = file ? {
     name: file.name,
@@ -503,7 +522,8 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
       recordSupabaseError("File取得失敗", error);
       throw error;
     }
-    filePath = `${userId}/${jobId}/${sanitizeFileName(file.name)}`;
+    storageFileName = createSafeStorageFileName(file.name);
+    filePath = `${userId}/${jobId}/${storageFileName}`;
     validateUploadPath(filePath, userId);
     await verifyStorageBucketAccess(userId);
     try {
@@ -521,7 +541,8 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
         bucket: SUPABASE_BUCKET,
         file_path: filePath,
         file_url: fileUrl,
-        file_name: file.name,
+        original_file_name: file.name,
+        safe_file_name: storageFileName,
         file_size: file.size,
         input_type: inputType,
         message: "Storage upload succeeded",
@@ -531,7 +552,8 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
         ok: false,
         bucket: SUPABASE_BUCKET,
         file_path: filePath,
-        file_name: file.name,
+        original_file_name: file.name,
+        safe_file_name: storageFileName,
         input_type: inputType,
         message: supabaseErrorMessage(error),
       });
@@ -557,6 +579,9 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
       source_type: inputType,
       uploaded_file: fileMeta,
       file_name: fileMeta?.name || null,
+      original_file_name: fileMeta?.name || null,
+      storage_file_name: storageFileName,
+      storage_path: filePath,
       file_type: fileMeta?.type || null,
       file_size: fileMeta?.size || null,
       source: metadata.source || "ai_import_center",
@@ -598,6 +623,8 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
       status: inserted.status,
       job_type: inserted.job_type,
       file_path: inserted.file_path,
+      original_file_name: fileMeta?.name || null,
+      safe_file_name: storageFileName,
       message: "ai_jobs pending insert succeeded",
     });
   } catch (error) {
@@ -606,6 +633,8 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
       id: jobId,
       job_type: jobType,
       file_path: filePath,
+      original_file_name: fileMeta?.name || null,
+      safe_file_name: storageFileName,
       message: supabaseErrorMessage(error),
     });
     recordSupabaseError("ai_jobs insert failed", error);
@@ -1183,6 +1212,9 @@ function renderSyncPanel(options = {}) {
         <div><span>ログイン状態</span><strong>${user ? "ログイン済み" : isConfigured ? "未ログイン" : "Supabase未設定"}</strong></div>
         <div><span>user.id</span><strong>${user?.id || "-"}</strong></div>
         <div><span>Storage bucket名</span><strong>${SUPABASE_BUCKET}</strong></div>
+        <div><span>最後に使ったstorage path</span><strong>${upload?.file_path || aiJob?.file_path || "-"}</strong></div>
+        <div><span>最後のoriginal file name</span><strong>${upload?.original_file_name || job?.uploaded_file?.name || "-"}</strong></div>
+        <div><span>最後のsafe file name</span><strong>${upload?.safe_file_name || job?.storage_file_name || "-"}</strong></div>
         <div><span>Storage bucket確認</span><strong>${storage ? `${storage.ok ? "OK" : "NG"} / ${storage.message}` : "未確認"}</strong></div>
         <div><span>最後のアップロード結果</span><strong>${upload ? `${upload.ok ? "OK" : "NG"} / ${upload.file_path || "-"} / ${upload.message}` : "なし"}</strong></div>
         <div><span>最後のai_jobs作成結果</span><strong>${aiJob ? `${aiJob.ok ? "OK" : "NG"} / ${aiJob.status || "-"} / ${aiJob.id || "-"} / ${aiJob.message}` : "なし"}</strong></div>

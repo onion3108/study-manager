@@ -259,9 +259,8 @@ button {
   grid-template-columns: minmax(300px, 0.95fr) minmax(320px, 1fr) minmax(280px, 0.8fr);
   grid-template-areas:
     "hero action events"
-    "hero action menu"
-    "hero schedule ai"
-    "hero schedule countdown";
+    "hero schedule menu"
+    "ai schedule countdown";
   gap: 12px;
   align-items: start;
 }
@@ -273,6 +272,15 @@ button {
 .home-layout .panel h2 {
   margin-bottom: 8px;
   font-size: 17px;
+}
+
+.home-layout .legend-item {
+  gap: 6px;
+  font-size: 11px;
+}
+
+.home-layout .legend-item strong {
+  font-size: 12px;
 }
 
 .home-layout .mini-timetable {
@@ -287,6 +295,18 @@ button {
 .home-layout .upload-mini {
   min-height: 23px;
   font-size: 11px;
+}
+
+.home-layout .countdown-list {
+  gap: 6px;
+}
+
+.home-layout .countdown-item {
+  padding: 7px 8px;
+}
+
+.home-layout .countdown-item strong {
+  font-size: 16px;
 }
 
 .hero-panel {
@@ -1553,10 +1573,10 @@ button {
   .home-layout {
     grid-template-columns: minmax(0, 1fr) minmax(300px, 0.8fr);
     grid-template-areas:
-      "hero action"
-      "schedule menu"
-      "schedule events"
-      "countdown ai";
+      "action schedule"
+      "hero schedule"
+      "ai menu"
+      "events countdown";
   }
 
   .hero-panel {
