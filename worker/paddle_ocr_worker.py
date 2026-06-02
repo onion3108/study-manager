@@ -1,6 +1,4 @@
-import base64
 import json
-import mimetypes
 import tempfile
 from pathlib import Path
 
@@ -20,21 +18,6 @@ def get_ocr():
             use_textline_orientation=False,
         )
     return _ocr
-
-
-def decode_data_url(data_url, file_name):
-    if not data_url:
-        return None
-    if "," not in data_url:
-        raise ValueError("file_data_url is not a valid data URL")
-    header, payload = data_url.split(",", 1)
-    suffix = Path(file_name or "").suffix
-    if not suffix:
-        mime = header.split(";", 1)[0].replace("data:", "")
-        suffix = mimetypes.guess_extension(mime) or ".bin"
-    temp_path = Path(tempfile.mkstemp(suffix=suffix)[1])
-    temp_path.write_bytes(base64.b64decode(payload))
-    return temp_path
 
 
 def to_plain(value):
@@ -169,13 +152,3 @@ def run_paddle_ocr(path, source_name):
         "pages": pages,
         "blocks": blocks,
     }
-
-
-def ocr_job_file(job):
-    temp_path = None
-    if job.get("file_data_url"):
-        temp_path = decode_data_url(job["file_data_url"], job.get("file_name") or job.get("uploaded_file", {}).get("name"))
-        return temp_path, temp_path
-    if job.get("file_path"):
-        return Path(job["file_path"]), None
-    raise ValueError("job has no file_data_url or file_path")

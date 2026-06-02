@@ -1,160 +1,222 @@
 # Study Manager
 
-高校3年生向けの学習管理アプリです。ホーム、カレンダー、Todo、時間割、教科カード、AI取り込みセンターを、GitHub Pagesで公開できる静的Webサイトとして動かします。
+高校3年生向けの学習管理アプリです。GitHub Pagesで公開したWebサイトを、Supabase DB / Storageで同期し、画像・PDFのAI処理はPC上のローカルworkerが実行します。
 
-Webサイト側ではOllama、PaddleOCR、`localhost:11434`へ直接接続しません。AI処理はPC側のローカルworkerで行い、Webサイトとは `jobs.json` / `results.json` のエクスポート・インポートでつなぎます。
+Webサイトから`localhost`、Ollama、PaddleOCRへ直接アクセスしません。
 
-## ファイル構成
+## 構成
 
-- `index.html`: GitHub Pagesで公開する入口
-- `styles.css`: UIスタイル
-- `app.js`: 画面表示、localStorage保存、AI jobs作成、結果読み込み
-- `data.js`: 時間割、年間予定、献立、Todo初期データ
-- `worker/run_worker.py`: jobs.jsonを処理する入口
-- `worker/paddle_ocr_worker.py`: PaddleOCRで画像/PDFを構造付きOCR
-- `worker/ollama_worker.py`: OCR済みテキストをOllamaへ渡して要約・問題生成
-- `worker/requirements.txt`: worker用Python依存
-- `worker/README.md`: workerの詳しい使い方
-- `.gitignore`: 公開不要ファイルの除外
-- `env.example`: worker用環境変数例
+```text
+GitHub Pages Web
+  -> Supabase DB / Supabase Storage
+  -> local PC worker
+  -> Supabase DB
+  -> GitHub Pages Web
+```
 
-CSS/JSはすべて `./styles.css`、`./data.js`、`./app.js` の相対パスで読み込むため、`https://ユーザー名.github.io/リポジトリ名/` 形式でも動きます。
+主なファイル:
+
+- `index.html`: GitHub Pagesで開く入口
+- `styles.css`: 画面スタイル
+- `data.js`: 初期データ
+- `app.js`: 表示、操作、Supabase同期、AI job作成
+- `supabase-config.js`: Web側のSupabase URL / anon key設定
+- `supabase/schema.sql`: DBテーブル、RLS、Storage bucket/policy
+- `worker/run_worker.py`: Supabaseのpending jobを処理するworker
+- `worker/paddle_ocr_worker.py`: PaddleOCR
+- `worker/ollama_worker.py`: Ollama連携
+- `worker/requirements.txt`: worker依存関係
+
+## GitHub Pagesで公開する方法
+
+1. GitHubで`study-manager`リポジトリを作成します。
+2. このプロジェクトをpushします。
+3. GitHubの`Settings`を開きます。
+4. `Pages`を開きます。
+5. `Source`を`Deploy from a branch`にします。
+6. `Branch`を`main`、folderを`/root`にします。
+7. `Save`を押します。
+8. 数分後に `https://onion3108.github.io/study-manager/` のようなURLへアクセスします。
+
+CSS/JSは相対パスで読み込むため、リポジトリ名付きURLでも動きます。
 
 ## GitHubへpushする方法
 
-1. GitHubで新しいリポジトリを作成します。
-2. このフォルダで次を実行します。
-
 ```powershell
-git init
-git add index.html styles.css app.js data.js README.md .gitignore env.example jobs.json worker supabase
-git commit -m "Prepare Study Manager for GitHub Pages"
+git add index.html styles.css app.js data.js supabase-config.js README.md .gitignore env.example worker supabase
+git commit -m "Add Supabase sync and AI worker pipeline"
 git branch -M main
-git remote add origin https://github.com/<ユーザー名>/<リポジトリ名>.git
+git remote add origin https://github.com/onion3108/study-manager.git
 git push -u origin main
 ```
 
-すでにremoteがある場合は、`git remote add origin ...` の代わりに `git remote -v` で確認してからpushしてください。
+すでにremoteがある場合は`git remote add origin ...`は不要です。
 
-## GitHub Pagesを有効化する方法
+## Supabase設定
 
-1. GitHubのリポジトリページを開きます。
-2. `Settings` を開きます。
-3. 左メニューの `Pages` を開きます。
-4. `Source` を `Deploy from a branch` にします。
-5. `Branch` を `main`、folderを `/root` にします。
-6. `Save` を押します。
-7. 数分後、Pages画面に公開URLが表示されます。
+1. Supabaseで新しいProjectを作成します。
+2. `SQL Editor`で`supabase/schema.sql`を実行します。
+3. `Authentication > URL Configuration`でSite URLにGitHub PagesのURLを設定します。
+4. `Authentication > Providers > Email`を有効にします。
+5. `Project Settings > API`からURLとanon keyを確認します。
+6. `supabase-config.js`に設定します。
 
-公開URL例:
-
-```text
-https://<ユーザー名>.github.io/<リポジトリ名>/
+```js
+window.STUDY_MANAGER_SUPABASE = {
+  url: "https://YOUR_PROJECT.supabase.co",
+  anonKey: "YOUR_SUPABASE_ANON_KEY",
+  storageBucket: "study-files",
+};
 ```
 
-## Webサイトでできること
+anon keyはWebに置いてよい公開用キーです。service role keyは絶対にWebへ置かないでください。
 
-- ホーム表示
-- カレンダー表示
-- Todo管理
-- 時間割表示
-- 教科カードから画像/PDFアップロード
-- アップロード時のpending AI job作成
-- `AI jobsを書き出す` で `jobs.json` をダウンロード
-- `AI結果を読み込む` で `results.json` を読み込み
-- 授業詳細パネルにOCR結果、要約、重要ポイント、生成問題を表示
+## 同期対象
 
-## Webサイトでやらないこと
+正本データはSupabaseに保存します。localStorageは一時キャッシュです。
 
-- Ollamaへ直接アクセスしない
-- `localhost:11434`へ直接アクセスしない
-- PaddleOCRをブラウザ内で実行しない
-- 秘密キーをブラウザに埋め込まない
-- ローカルファイルへ直接保存しない
+- Todo
+- カレンダー予定
+- 今日の予定
+- 時間割
+- 重要イベント
+- AI処理タスク
+- AI生成結果
+- アップロード画像/PDF
+- OCR結果とOCRレイアウト構造
+- 生成問題、解答、要約、重要語句
+- 理解度データ
+- 円グラフ用の学習状況データ
+- 教科ごとの進捗
+- 学習ログ
+- 設定、通知設定、Ollamaモデル名
+- 献立などアプリ内の保存データ
 
-データ保存はlocalStorageとJSONインポート/エクスポートで行います。
+## WebサイトでAI依頼を作る方法
 
-## AI jobsを書き出す方法
+1. GitHub PagesのWebサイトでSupabaseへログインします。
+2. 授業カードを開きます。
+3. 板書写真、ノート写真、プリント画像、PDFをアップロードします。
+4. ファイルはSupabase Storageの`study-files` bucketへ保存されます。
+5. `ai_jobs`に`status='pending'`の行が作成されます。
+6. AI取り込みセンターでpending/processing/completed/failedとデバッグ情報を確認できます。
 
-1. GitHub Pages上のStudy Managerを開きます。
-2. 時間割や日表示から教科カードを開きます。
-3. `板書写真を追加`、`ノート写真を追加`、`プリントを追加` で画像/PDFを選びます。
-4. 自動でpending jobが作成されます。
-5. `AI取り込みセンター` を開きます。
-6. `AI jobsを書き出す` を押して `jobs.json` を保存します。
+GitHub Pages側はAIを実行せず、依頼をSupabaseに書き込むだけです。
 
 ## workerでPaddleOCR + Ollama処理する方法
 
-PC側で実行します。GitHub Pages上では実行しません。
-
-1. Ollamaを起動します。
-2. モデルがあるか確認します。
+PC側で実行します。
 
 ```powershell
-ollama list
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r worker/requirements.txt
+copy env.example .env
 ```
 
-3. PaddleOCR依存を入れます。
+`.env`を編集します。
+
+```env
+OLLAMA_URL=http://localhost:11434/api/generate
+OLLAMA_MODEL=elyza:jp8b
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_STORAGE_BUCKET=study-files
+```
+
+service role keyはローカルworkerだけで使います。`.env`は`.gitignore`で除外されています。
+
+1回だけ処理:
 
 ```powershell
-python -m pip install -r worker/requirements.txt
+python worker/run_worker.py --once
 ```
 
-4. Webサイトから書き出した `jobs.json` をこのプロジェクトのルートに置きます。
-5. workerを実行します。
+常駐処理:
 
 ```powershell
-$env:OLLAMA_MODEL="elyza:jp8b"
-python worker/run_worker.py --jobs jobs.json --results results.json
+python worker/run_worker.py --interval 20 --limit 3
 ```
 
-6. `results.json` が作成されます。
+workerの流れ:
 
-workerは画像/PDFをPaddleOCRでOCRし、OllamaにはOCR済みテキストだけを渡します。
-
-## results.jsonをWebサイトへ読み込む方法
-
-1. GitHub Pages上のStudy Managerを開きます。
-2. `AI取り込みセンター` を開きます。
-3. `AI結果を読み込む` から `results.json` を選びます。
-4. 対応するjobに結果がマージされます。
-5. 授業詳細パネルにOCR結果、要約、重要ポイント、生成問題が表示されます。
+1. `ai_jobs`から`pending`を取得
+2. `processing`へ更新
+3. Supabase Storageから画像/PDFをダウンロード
+4. PaddleOCRでレイアウト付きOCR
+5. `ai_jobs.ocr_text`と`ai_jobs.ocr_layout`を更新
+6. OCR済みテキストだけをOllamaへ渡す
+7. 要約、重要語句、問題、解答、理解度データを作成
+8. `ai_results`へ保存
+9. `ai_jobs.status`を`completed`へ更新
+10. 失敗時は`failed`と`error_message`を保存
 
 ## Ollamaの起動確認
 
 ```powershell
 ollama list
-```
-
-API確認:
-
-```powershell
 Invoke-RestMethod -Uri http://localhost:11434/api/generate -Method Post -ContentType "application/json" -Body '{"model":"elyza:jp8b","prompt":"ping","stream":false}'
 ```
 
-この確認はPC側で行います。GitHub Pagesのブラウザからは行いません。
+新しいモデルはworkerが勝手に入れません。`.env`の`OLLAMA_MODEL`には、すでに`ollama list`に表示されるモデル名を指定してください。
 
 ## PaddleOCRのインストール
 
-Windows CPU環境では、現在の検証では `paddlepaddle==3.2.2` が安定しました。
-
 ```powershell
-python -m pip install paddleocr paddlepaddle==3.2.2 pypdfium2 Pillow
+pip install -r worker/requirements.txt
 ```
+
+初回実行時はPaddleOCRのモデル取得に時間がかかる場合があります。PDF処理には`pypdfium2`を使います。
+
+## resultsの表示
+
+workerが完了すると、WebサイトのAI取り込みセンターと授業詳細パネルに以下が表示されます。
+
+- AI処理状態
+- error_message
+- OCRプレビュー
+- 要約
+- 重要語句
+- 生成問題
+- 解答
+- 使用モデル
+- worker処理時刻
+
+手動で反映したい場合はAI取り込みセンターの`Supabase再読み込み`を押してください。Realtimeが有効な場合は自動反映されます。
 
 ## よくあるエラー
 
-`Ollama API error 404`
-: モデル名が違う可能性があります。`ollama list` に表示された名前を `OLLAMA_MODEL` に指定してください。
+`SupabaseにログインしてからAI依頼を作成してください`
+: Webでログインしていません。AI取り込みセンターからログインメールを送ってください。
 
-`Connection refused`
-: Ollamaが起動していません。Ollamaアプリまたはサービスを起動してください。
+`supabase-config.jsにURLとanon keyを設定してください`
+: `supabase-config.js`が空です。SupabaseのURLとanon keyを設定してpushしてください。
+
+`permission denied`またはStorage upload error
+: `supabase/schema.sql`を実行し、Storage bucketとpolicyが作成されているか確認してください。
+
+`SUPABASE_SERVICE_ROLE_KEY is not set`
+: PC側の`.env`にservice role keyがありません。Web側には絶対に置かないでください。
+
+`Ollama API error`
+: Ollamaが起動しているか、`.env`の`OLLAMA_MODEL`が`ollama list`にあるモデルか確認してください。
 
 `PaddleOCR import error`
-: `python -m pip install -r worker/requirements.txt` を実行してください。
+: 仮想環境を有効化し、`pip install -r worker/requirements.txt`を再実行してください。
 
-`results.jsonを読み込んでも反映されない`
-: `jobs.json` を書き出したあとにlocalStorageを消すと、Web側に元jobがなくなる場合があります。同じブラウザで読み込むか、`results.json` に含まれるjob情報を確認してください。
+## 動作確認
 
-`localStorage容量不足`
-: 大きいPDFや画像を多数入れると容量に達する場合があります。処理後は不要なjobを削除するか、画像を圧縮してからアップロードしてください。
+1. PCでTodo追加し、スマホで同じアカウントにログインして表示を確認します。
+2. スマホでTodo追加し、PCで表示を確認します。
+3. PCでカレンダー予定や設定を変更し、スマホに反映されるか確認します。
+4. localStorageを消して再読み込みし、Supabaseから復元されるか確認します。
+5. Webから画像/PDFをアップロードします。
+6. Supabase Storageにファイルが保存されたか確認します。
+7. `ai_jobs`に`pending`が作成されたか確認します。
+8. `python worker/run_worker.py --once`を実行します。
+9. `pending -> processing -> completed`へ変わるか確認します。
+10. `ai_jobs.ocr_text`と`ai_jobs.ocr_layout`が保存されたか確認します。
+11. `ai_results`に要約、問題、解答、重要語句が保存されたか確認します。
+12. WebサイトにOCR結果、問題、要約、解答が表示されるか確認します。
+13. エラー時は`failed`と`error_message`が表示されるか確認します。

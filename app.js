@@ -3,6 +3,29 @@ const STORAGE = {
   todos: "study-manager-v2-todos",
   plans: "study-manager-v2-plans",
   jobs: "study-manager-v2-jobs",
+  events: "study-manager-v2-events",
+  menus: "study-manager-v2-menus",
+  timetable: "study-manager-v2-timetable",
+  settings: "study-manager-v2-settings",
+  studyLogs: "study-manager-v2-study-logs",
+  subjectProgress: "study-manager-v2-subject-progress",
+  understandingScores: "study-manager-v2-understanding-scores",
+};
+
+const SUPABASE_CONFIG = window.STUDY_MANAGER_SUPABASE || {};
+const SUPABASE_BUCKET = SUPABASE_CONFIG.storageBucket || "study-files";
+let supabaseClient = null;
+let syncSaveTimer = null;
+let isApplyingRemote = false;
+let syncChannel = null;
+
+let syncState = {
+  configured: false,
+  status: "offline",
+  user: null,
+  message: "Supabase未設定",
+  lastJob: null,
+  lastWorkerAt: null,
 };
 
 const routes = [
@@ -24,10 +47,16 @@ let state = {
   todos: loadState(STORAGE.todos, DATA.todos),
   plans: loadState(STORAGE.plans, seedPlans()),
   jobs: loadState(STORAGE.jobs, []),
+  events: loadState(STORAGE.events, DATA.events),
+  menus: loadState(STORAGE.menus, DATA.menus),
+  timetable: loadState(STORAGE.timetable, DATA.timetable),
+  studyLogs: loadState(STORAGE.studyLogs, []),
+  subjectProgress: loadState(STORAGE.subjectProgress, []),
+  understandingScores: loadState(STORAGE.understandingScores, []),
   activeClass: null,
   scheduleDraft: null,
   ocrDraft: null,
-  settings: loadState("study-manager-v2-settings", {
+  settings: loadState(STORAGE.settings, {
     ollamaModel: "elyza:jp8b",
     ocrLanguage: "japan",
     defaultQuestionCount: 10,
@@ -38,6 +67,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderNav();
   renderAll();
   bindGlobalActions();
+  initSupabase();
 });
 
 function renderAll() {
@@ -48,6 +78,382 @@ function renderAll() {
   renderQuestions();
   renderImportCenter();
   renderSettings();
+}
+
+async function initSupabase() {
+  syncState.configured = Boolean(SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey && window.supabase);
+  if (!syncState.configured) {
+    syncState.status = "offline";
+    syncState.message = "supabase-config.jsにURLとanon keyを設定してください";
+    renderAll();
+    return;
+  }
+  supabaseClient = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
+  const { data } = await supabaseClient.auth.getSession();
+  syncState.user = data.session?.user || null;
+  syncState.status = syncState.user ? "online" : "signed_out";
+  syncState.message = syncState.user ? "Supabase同期中" : "ログインしてください";
+  if (syncState.user) await loadSupabaseData();
+  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+    syncState.user = session?.user || null;
+    syncState.status = syncState.user ? "online" : "signed_out";
+    syncState.message = syncState.user ? "Supabase同期中" : "ログインしてください";
+    if (syncState.user) {
+      subscribeSupabaseChanges();
+      await loadSupabaseData();
+    }
+    renderAll();
+  });
+  subscribeSupabaseChanges();
+  renderAll();
+}
+
+function isSupabaseReady() {
+  return Boolean(supabaseClient && syncState.user);
+}
+
+async function signInWithEmail(email) {
+  if (!supabaseClient) {
+    showToast("Supabaseが未設定です");
+    return;
+  }
+  const { error } = await supabaseClient.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: location.href },
+  });
+  if (error) {
+    showToast(`ログインメール送信に失敗: ${error.message}`);
+  } else {
+    showToast("ログイン用メールを送信しました");
+  }
+}
+
+async function signOutSupabase() {
+  if (!supabaseClient) return;
+  if (syncChannel) {
+    supabaseClient.removeChannel(syncChannel);
+    syncChannel = null;
+  }
+  await supabaseClient.auth.signOut();
+  syncState.user = null;
+  syncState.status = "signed_out";
+  syncState.message = "ログアウトしました";
+  renderAll();
+}
+
+async function loadSupabaseData() {
+  if (!isSupabaseReady()) return;
+  isApplyingRemote = true;
+  try {
+    const userId = syncState.user.id;
+    const [{ data: appRows }, { data: todoRows }, { data: jobRows }, { data: resultRows }] = await Promise.all([
+      supabaseClient.from("app_settings").select("*").eq("user_id", userId).eq("key", "app_state").maybeSingle(),
+      supabaseClient.from("todos").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+      supabaseClient.from("ai_jobs").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+      supabaseClient.from("ai_results").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+    ]);
+    const hasRemoteAppState = Boolean(appRows?.app_state);
+    const hasRemoteTodos = Boolean(todoRows?.length);
+    const appState = appRows?.app_state || {};
+    if (appState.todos) state.todos = appState.todos;
+    if (appState.plans) state.plans = appState.plans;
+    if (appState.events) state.events = appState.events;
+    if (appState.menus) state.menus = appState.menus;
+    if (appState.timetable) state.timetable = appState.timetable;
+    if (appState.studyLogs) state.studyLogs = appState.studyLogs;
+    if (appState.subjectProgress) state.subjectProgress = appState.subjectProgress;
+    if (appState.understandingScores) state.understandingScores = appState.understandingScores;
+    if (appRows?.settings) state.settings = { ...state.settings, ...appRows.settings };
+    if (todoRows?.length) state.todos = todoRows.map(dbTodoToState);
+    state.jobs = await hydrateJobSignedUrls(mapAiJobs(jobRows || [], resultRows || []));
+    syncState.lastJob = state.jobs[0] || null;
+    syncState.lastWorkerAt = state.jobs.find((job) => job.worker_processed_at)?.worker_processed_at || null;
+    cacheAllState();
+    if (!hasRemoteAppState && !hasRemoteTodos) {
+      await persistSupabaseNow();
+    }
+    syncState.status = "online";
+    syncState.message = "Supabaseから同期しました";
+  } catch (error) {
+    syncState.status = "error";
+    syncState.message = error.message;
+    showToast(`Supabase同期エラー: ${error.message}`);
+  } finally {
+    isApplyingRemote = false;
+    renderAll();
+  }
+}
+
+function subscribeSupabaseChanges() {
+  if (!supabaseClient || !syncState.user) return;
+  if (syncChannel) {
+    supabaseClient.removeChannel(syncChannel);
+    syncChannel = null;
+  }
+  syncChannel = supabaseClient
+    .channel(`study-manager-${syncState.user.id}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "todos", filter: `user_id=eq.${syncState.user.id}` }, () => loadSupabaseData())
+    .on("postgres_changes", { event: "*", schema: "public", table: "app_settings", filter: `user_id=eq.${syncState.user.id}` }, () => loadSupabaseData())
+    .on("postgres_changes", { event: "*", schema: "public", table: "ai_jobs", filter: `user_id=eq.${syncState.user.id}` }, () => loadSupabaseData())
+    .on("postgres_changes", { event: "*", schema: "public", table: "ai_results", filter: `user_id=eq.${syncState.user.id}` }, () => loadSupabaseData())
+    .subscribe();
+}
+
+function cacheAllState() {
+  saveLocalState(STORAGE.todos, state.todos);
+  saveLocalState(STORAGE.plans, state.plans);
+  saveLocalState(STORAGE.jobs, state.jobs);
+  saveLocalState(STORAGE.events, state.events);
+  saveLocalState(STORAGE.menus, state.menus);
+  saveLocalState(STORAGE.timetable, state.timetable);
+  saveLocalState(STORAGE.studyLogs, state.studyLogs);
+  saveLocalState(STORAGE.subjectProgress, state.subjectProgress);
+  saveLocalState(STORAGE.understandingScores, state.understandingScores);
+  saveLocalState(STORAGE.settings, state.settings);
+}
+
+function buildAppSnapshot() {
+  return {
+    todos: state.todos,
+    plans: state.plans,
+    jobs: state.jobs,
+    events: state.events,
+    menus: state.menus,
+    timetable: state.timetable,
+    settings: state.settings,
+    studyLogs: state.studyLogs,
+    subjectProgress: state.subjectProgress,
+    understandingScores: state.understandingScores,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function persistSupabaseSoon() {
+  if (isApplyingRemote || !isSupabaseReady()) return;
+  window.clearTimeout(syncSaveTimer);
+  syncSaveTimer = window.setTimeout(persistSupabaseNow, 700);
+}
+
+async function persistSupabaseNow() {
+  if (!isSupabaseReady()) return;
+  try {
+    const userId = syncState.user.id;
+    await supabaseClient.from("app_settings").upsert({
+      user_id: userId,
+      key: "app_state",
+      settings: state.settings,
+      app_state: buildAppSnapshot(),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id,key" });
+    await upsertTodosToSupabase(userId);
+    syncState.status = "online";
+    syncState.message = "Supabaseへ保存しました";
+  } catch (error) {
+    syncState.status = "error";
+    syncState.message = error.message;
+  }
+}
+
+async function upsertTodosToSupabase(userId) {
+  if (!state.todos.length) return;
+  const rows = state.todos.map((todo) => ({
+    user_id: userId,
+    client_id: todo.id,
+    title: todo.title,
+    description: todo.description || "",
+    subject: todo.subject || "",
+    due_date: todo.dueDate || todo.due_date || null,
+    kind: todo.kind || "Todo",
+    importance: todo.importance || "normal",
+    completed: Boolean(todo.completed),
+    countdown_enabled: Boolean(todo.countdownEnabled),
+    repeat_rule: todo.repeat || "none",
+    remind_3_days_before: Boolean(todo.remind3DaysBefore),
+    remind_1_day_before: todo.remind1DayBefore !== false,
+    remind_on_day: todo.remindOnDay !== false,
+    show_on_calendar: todo.showOnCalendar !== false,
+    raw: todo,
+    updated_at: new Date().toISOString(),
+  }));
+  await supabaseClient.from("todos").upsert(rows, { onConflict: "user_id,client_id" });
+}
+
+function dbTodoToState(row) {
+  return {
+    ...(row.raw || {}),
+    id: row.client_id || row.id,
+    title: row.title,
+    description: row.description,
+    subject: row.subject,
+    dueDate: row.due_date,
+    kind: row.kind,
+    importance: row.importance,
+    completed: row.completed,
+    countdownEnabled: row.countdown_enabled,
+    repeat: row.repeat_rule,
+    remind3DaysBefore: row.remind_3_days_before,
+    remind1DayBefore: row.remind_1_day_before,
+    remindOnDay: row.remind_on_day,
+    showOnCalendar: row.show_on_calendar,
+  };
+}
+
+function mapAiJobs(jobRows, resultRows) {
+  const resultsByJob = new Map(resultRows.map((result) => [result.job_id, result]));
+  return jobRows.map((row) => {
+    const result = row.result_id ? resultRows.find((item) => item.id === row.result_id) : resultsByJob.get(row.id);
+    const meta = row.metadata || {};
+    return {
+      ...(meta || {}),
+      id: row.id,
+      job_type: row.job_type,
+      source_type: row.input_type || meta.source_type || "text",
+      status: row.status,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      started_at: row.started_at,
+      completed_at: row.completed_at,
+      worker_processed_at: row.worker_processed_at,
+      error_message: row.error_message,
+      ocr_result: row.ocr_layout && Object.keys(row.ocr_layout).length ? row.ocr_layout : row.ocr_text ? { text: row.ocr_text, layout_text: row.ocr_text } : meta.ocr_result || null,
+      layout_blocks: row.ocr_layout?.blocks || meta.layout_blocks || [],
+      input_text: row.input_text || "",
+      result_id: row.result_id,
+      model_name: row.model_name,
+      file_path: row.file_path,
+      file_url: row.file_url,
+      file_name: meta.file_name || meta.uploaded_file?.name,
+      related_subject: row.subject || meta.related_subject,
+      related_date: meta.related_date,
+      related_period: meta.related_period,
+      related_class: meta.related_class,
+      uploaded_file: meta.uploaded_file,
+      material_type: meta.material_type,
+      result_json: result ? {
+        summary: result.summary,
+        important_points: result.important_terms || [],
+        questions: result.questions || [],
+        answers: result.answers || [],
+        understanding_data: result.understanding_data || {},
+        ocr_layout: result.ocr_layout || null,
+      } : null,
+    };
+  });
+}
+
+async function hydrateJobSignedUrls(jobs) {
+  if (!supabaseClient || !jobs.length) return jobs;
+  return Promise.all(jobs.map(async (job) => {
+    if (!job.file_path || job.file_preview_url) return job;
+    try {
+      const { data, error } = await supabaseClient.storage.from(SUPABASE_BUCKET).createSignedUrl(job.file_path, 60 * 60);
+      if (error) return job;
+      return { ...job, file_preview_url: data?.signedUrl || job.file_url };
+    } catch {
+      return job;
+    }
+  }));
+}
+
+function sanitizeFileName(name) {
+  return String(name || "upload.bin")
+    .normalize("NFKC")
+    .replace(/[\\/:*?"<>|\s]+/g, "_")
+    .replace(/_+/g, "_")
+    .slice(0, 120);
+}
+
+function requireSupabaseUser() {
+  if (!supabaseClient) {
+    showToast("supabase-config.jsにURLとanon keyを設定してください");
+    return false;
+  }
+  if (!syncState.user) {
+    showToast("SupabaseにログインしてからAI依頼を作成してください");
+    return false;
+  }
+  return true;
+}
+
+function inputTypeForFile(file) {
+  if (!file) return "text";
+  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf") ? "pdf" : "image";
+}
+
+async function createSupabaseAiJob({ file = null, jobType, subject = "", inputText = "", prompt = "", metadata = {} }) {
+  if (!requireSupabaseUser()) throw new Error("Supabase login is required.");
+  const userId = syncState.user.id;
+  const jobId = crypto.randomUUID();
+  const inputType = inputTypeForFile(file);
+  let filePath = null;
+  let fileUrl = null;
+  const now = new Date().toISOString();
+  const fileMeta = file ? {
+    name: file.name,
+    size: file.size,
+    type: file.type || (inputType === "pdf" ? "application/pdf" : "application/octet-stream"),
+  } : null;
+
+  if (file) {
+    filePath = `${userId}/${jobId}/${sanitizeFileName(file.name)}`;
+    const { error: uploadError } = await supabaseClient.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
+      cacheControl: "3600",
+      contentType: file.type || "application/octet-stream",
+      upsert: false,
+    });
+    if (uploadError) throw uploadError;
+    const { data: publicData } = supabaseClient.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath);
+    fileUrl = publicData?.publicUrl || null;
+  }
+
+  const jobRow = {
+    id: jobId,
+    user_id: userId,
+    job_type: jobType,
+    subject,
+    input_type: inputType,
+    input_text: inputText,
+    file_path: filePath,
+    file_url: fileUrl,
+    prompt,
+    status: "pending",
+    model_name: state.settings.ollamaModel,
+    metadata: {
+      ...metadata,
+      source_type: inputType,
+      uploaded_file: fileMeta,
+      file_name: fileMeta?.name || null,
+      file_type: fileMeta?.type || null,
+      file_size: fileMeta?.size || null,
+      created_from: "github_pages",
+    },
+    created_at: now,
+    updated_at: now,
+  };
+  const { data: inserted, error: jobError } = await supabaseClient.from("ai_jobs").insert(jobRow).select("*").single();
+  if (jobError) throw jobError;
+
+  if (filePath && fileMeta) {
+    const { error: fileError } = await supabaseClient.from("uploaded_files").insert({
+      user_id: userId,
+      ai_job_id: jobId,
+      subject,
+      file_name: fileMeta.name,
+      mime_type: fileMeta.type,
+      size_bytes: fileMeta.size,
+      storage_bucket: SUPABASE_BUCKET,
+      storage_path: filePath,
+      public_url: fileUrl,
+      related_date: metadata.related_date || metadata.related_class?.date || null,
+      related_period: metadata.related_period || metadata.related_class?.period || null,
+      metadata,
+    });
+    if (fileError) throw fileError;
+  }
+
+  const mapped = (await hydrateJobSignedUrls(mapAiJobs([inserted], [])))[0];
+  syncState.lastJob = mapped;
+  return mapped;
 }
 
 function renderNav() {
@@ -499,13 +905,14 @@ function renderImportCenter() {
     <div class="page-heading">
       <div><p class="eyebrow">Local AI Queue</p><h1>AI取り込みセンター</h1></div>
       <div class="heading-actions">
-        <button id="download-jobs" class="ghost-button" type="button">AI jobsを書き出す</button>
+        <button id="refresh-supabase" class="ghost-button" type="button">Supabase再読み込み</button>
       </div>
     </div>
+    ${renderSyncPanel()}
     <section class="panel ai-status-panel">
       <div class="status-grid">
         <div><span>AI実行</span><strong>PC側worker</strong></div>
-        <div><span>保存</span><strong>localStorage</strong></div>
+        <div><span>保存</span><strong>Supabase</strong></div>
         <div><span>Model</span><strong id="ollama-model">${state.settings.ollamaModel}</strong></div>
         <div><span>処理待ち件数</span><strong>${counts.pending}</strong></div>
         <div><span>処理中件数</span><strong>${counts.processing}</strong></div>
@@ -513,11 +920,9 @@ function renderImportCenter() {
         <div><span>失敗件数</span><strong>${counts.failed}</strong></div>
       </div>
       <div class="button-row">
-        <button id="download-jobs-secondary" class="ghost-button" type="button">AI jobsを書き出す</button>
-        <label class="ghost-button file-button">AI結果を読み込む<input id="jobs-import" type="file" accept="application/json,.json" /></label>
         <a class="ghost-button as-link" href="./worker/README.md" target="_blank" rel="noreferrer">workerの使い方を見る</a>
       </div>
-      <p class="note-text">GitHub Pages上ではOllama・PaddleOCR・localhostへ接続しません。画像/PDFはjobs.jsonへ書き出し、PC側workerで処理します。</p>
+      <p class="note-text">GitHub Pages上ではOllama・PaddleOCR・localhostへ接続しません。AI依頼はSupabaseに保存し、PC側workerが処理します。</p>
     </section>
     <div class="import-grid">
       <section class="panel">
@@ -562,9 +967,59 @@ function renderImportCenter() {
   kind.addEventListener("change", updateOptions);
   updateOptions();
   view.querySelector("#enqueue-job").addEventListener("click", () => enqueueImportJob(view));
-  view.querySelector("#download-jobs").addEventListener("click", downloadJobs);
-  view.querySelector("#download-jobs-secondary").addEventListener("click", downloadJobs);
-  view.querySelector("#jobs-import").addEventListener("change", importJobs);
+  bindSyncPanel(view);
+  view.querySelector("#refresh-supabase").addEventListener("click", loadSupabaseData);
+}
+
+function renderSyncPanel() {
+  const user = syncState.user;
+  const job = syncState.lastJob;
+  return `
+    <section class="panel sync-panel">
+      <div class="panel-header compact">
+        <div>
+          <p class="section-kicker">Supabase Sync</p>
+          <h2>${syncState.status}</h2>
+        </div>
+        ${user ? `<button id="supabase-signout" class="ghost-button" type="button">ログアウト</button>` : ""}
+      </div>
+      <p class="note-text">${escapeHtml(syncState.message || "")}</p>
+      ${user ? `<p class="note-text">user_id: ${escapeHtml(user.id)}</p>` : `
+        <div class="sync-login-row">
+          <input id="supabase-email" type="email" placeholder="メールアドレス" />
+          <button id="supabase-login" class="primary-action" type="button">ログインメール送信</button>
+        </div>
+      `}
+      <div class="debug-grid">
+        <div><span>last job</span><strong>${job?.id || "なし"}</strong></div>
+        <div><span>status</span><strong>${job?.status || "-"}</strong></div>
+        <div><span>result_id</span><strong>${job?.result_id || "-"}</strong></div>
+        <div><span>model</span><strong>${job?.model_name || state.settings.ollamaModel}</strong></div>
+        <div><span>created_at</span><strong>${job?.created_at || "-"}</strong></div>
+        <div><span>updated_at</span><strong>${job?.updated_at || "-"}</strong></div>
+        <div><span>worker time</span><strong>${job?.worker_processed_at || syncState.lastWorkerAt || "-"}</strong></div>
+        <div><span>error</span><strong>${job?.error_message || "-"}</strong></div>
+      </div>
+      ${job?.ocr_result?.text || job?.ocr_result?.layout_text ? `
+        <details class="job-detail-block">
+          <summary>ocr_text preview</summary>
+          <pre>${escapeHtml((job.ocr_result.layout_text || job.ocr_result.text || "").slice(0, 800))}</pre>
+        </details>
+      ` : ""}
+    </section>
+  `;
+}
+
+function bindSyncPanel(root) {
+  root.querySelector("#supabase-login")?.addEventListener("click", () => {
+    const email = root.querySelector("#supabase-email")?.value.trim();
+    if (!email) {
+      showToast("メールアドレスを入力してください");
+      return;
+    }
+    signInWithEmail(email);
+  });
+  root.querySelector("#supabase-signout")?.addEventListener("click", signOutSupabase);
 }
 
 function renderSettings() {
@@ -586,7 +1041,7 @@ function renderSettings() {
         <p class="section-kicker">AI設定</p>
         <h2>Ollama worker</h2>
         <div class="settings-grid">
-          <label><span>接続方式</span><input value="Node worker + jobs.json" /></label>
+          <label><span>接続方式</span><input value="Supabase DB / Storage + local worker" /></label>
           <label><span>モデル名</span><input id="setting-model" value="${state.settings.ollamaModel}" /></label>
           <label><span>OCR言語</span><input id="setting-ocr-language" value="${state.settings.ocrLanguage}" /></label>
           <label><span>要約の長さ</span><input value="短め" /></label>
@@ -626,13 +1081,8 @@ function renderSettings() {
       </section>
       <section class="panel">
         <p class="section-kicker">データ管理</p>
-        <h2>ローカルデータ</h2>
-        <div class="button-row">
-          <button class="ghost-button" type="button">ローカルデータを書き出し</button>
-          <button class="ghost-button" type="button">ローカルデータを読み込み</button>
-          <button class="ghost-button" type="button">AI jobsを書き出し</button>
-          <button class="ghost-button" type="button">AI結果を読み込み</button>
-        </div>
+        <h2>Supabase同期</h2>
+        <p class="note-text">正本データはSupabaseに保存します。localStorageはオフライン時の一時キャッシュとしてだけ使います。</p>
       </section>
       <section class="panel">
         <div class="panel-header">
@@ -642,7 +1092,7 @@ function renderSettings() {
           </div>
           <button id="save-settings" class="primary-action" type="button">保存</button>
         </div>
-        <p class="note-text">保存した設定はlocalStorageに残り、画面更新後も使用されます。worker側ではREADMEの通り環境変数にも同じモデル名を指定してください。</p>
+        <p class="note-text">保存した設定はSupabaseへ同期され、同じアカウントのPC・スマホ・iPadに反映されます。worker側の.envにも同じモデル名を指定してください。</p>
       </section>
     </div>
   `;
@@ -653,7 +1103,7 @@ function renderSettings() {
       ocrLanguage: view.querySelector("#setting-ocr-language").value.trim() || "japan",
       defaultQuestionCount: Number(view.querySelector("#setting-question-count").value) || 10,
     };
-    saveState("study-manager-v2-settings", state.settings);
+    saveState(STORAGE.settings, state.settings);
     showToast("保存しました");
     renderAll();
   });
@@ -746,29 +1196,36 @@ function closeScheduleModal() {
 function bindGlobalActions() {
   document.querySelectorAll("[data-close-sheet]").forEach((button) => button.addEventListener("click", closeSheet));
   document.querySelectorAll("[data-close-schedule-modal]").forEach((button) => button.addEventListener("click", closeScheduleModal));
-  document.getElementById("add-class-ai-job").addEventListener("click", () => {
+  document.getElementById("add-class-ai-job").addEventListener("click", async () => {
     if (!state.activeClass) return;
-    state.jobs.unshift({
-      id: crypto.randomUUID(),
-      job_type: "generate_questions",
-      source_type: "class_material",
-      status: "pending",
-      created_at: nowLabel(),
-      related_class: {
+    try {
+      const relatedClass = {
         date: state.activeClass.date,
         weekday: state.activeClass.weekday,
         period: state.activeClass.period,
         subject: state.activeClass.subject,
         teacher: state.activeClass.teacher,
-      },
-      input_text: `${state.activeClass.date} ${state.activeClass.period}限 ${state.activeClass.subject}`,
-      result_json: null,
-      error_message: null,
-    });
-    saveState(STORAGE.jobs, state.jobs);
-    closeSheet();
-    renderAll();
-    showToast("AI処理待ちに追加しました");
+      };
+      const job = await createSupabaseAiJob({
+        jobType: "generate_questions",
+        subject: state.activeClass.subject,
+        inputText: `${state.activeClass.date} ${state.activeClass.period}限 ${state.activeClass.subject}`,
+        metadata: {
+          related_subject: state.activeClass.subject,
+          related_date: state.activeClass.date,
+          related_period: state.activeClass.period,
+          related_class: relatedClass,
+          material_type: "class_material",
+        },
+      });
+      state.jobs.unshift(job);
+      cacheAllState();
+      closeSheet();
+      renderAll();
+      showToast("AI処理依頼をSupabaseに保存しました");
+    } catch (error) {
+      showToast(`AI処理依頼を作成できませんでした: ${error.message}`);
+    }
   });
   document.querySelectorAll("[data-class-upload]").forEach((input) => {
     input.addEventListener("change", () => handleClassUpload(input));
@@ -789,7 +1246,7 @@ function bindClassCards(root) {
   root.querySelectorAll("[data-class-key]").forEach((card) => {
     card.addEventListener("click", () => {
       const [date, weekday, period] = card.dataset.classKey.split("|");
-      const entry = DATA.timetable.find((item) => String(item.weekday) === weekday && String(item.period) === period);
+      const entry = state.timetable.find((item) => String(item.weekday) === weekday && String(item.period) === period);
       openClassSheet({ ...entry, date });
     });
   });
@@ -835,13 +1292,13 @@ async function handleClassUpload(input) {
   const file = input.files[0];
   const kind = input.dataset.classUpload;
   try {
-    showToast("AI jobを作成中です");
+    showToast("Supabaseへアップロードしています");
     const job = await buildClassUploadJob(file, kind, state.activeClass);
     state.jobs.unshift(job);
-    saveState(STORAGE.jobs, state.jobs);
+    cacheAllState();
     openClassSheet(state.activeClass);
     renderImportCenter();
-    showToast("pending jobを作成しました。AI jobsを書き出してworkerで処理してください");
+    showToast("pending jobをSupabaseに作成しました。PC側workerが処理します");
   } catch (error) {
     showToast(`AI jobを作成できませんでした: ${error.message}`);
   } finally {
@@ -850,40 +1307,27 @@ async function handleClassUpload(input) {
 }
 
 async function buildClassUploadJob(file, kind, classInfo) {
-  const dataUrl = await fileToDataUrl(file);
-  const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-  return {
-    id: `job_${crypto.randomUUID()}`,
-    job_type: kind === "print" ? "analyze_print_image" : kind === "note" ? "analyze_note_image" : "analyze_board_image",
-    source_type: isPdf ? "pdf" : "image",
-    status: "pending",
-    created_at: new Date().toISOString(),
-    file_name: file.name,
-    file_type: file.type || (isPdf ? "application/pdf" : "application/octet-stream"),
-    file_size: file.size,
-    file_data_url: dataUrl,
-    related_subject: classInfo.subject,
-    related_date: classInfo.date,
-    related_period: classInfo.period,
-    related_class: {
+  const relatedClass = {
       date: classInfo.date,
       weekday: classInfo.weekday,
       period: classInfo.period,
       subject: classInfo.subject,
       teacher: classInfo.teacher,
+    };
+  return createSupabaseAiJob({
+    file,
+    jobType: kind === "print" ? "analyze_print_image" : kind === "note" ? "analyze_note_image" : "analyze_board_image",
+    subject: classInfo.subject,
+    inputText: "",
+    prompt: "OCR結果をもとに、要約、重要語句、問題、解答、理解度確認データを作成してください。",
+    metadata: {
+      related_subject: classInfo.subject,
+      related_date: classInfo.date,
+      related_period: classInfo.period,
+      related_class: relatedClass,
+      material_type: kind,
     },
-    uploaded_file: {
-      name: file.name,
-      size: file.size,
-      type: file.type || "unknown",
-    },
-    material_type: kind,
-    input_text: "",
-    ocr_result: null,
-    layout_blocks: [],
-    result_json: null,
-    error_message: null,
-  };
+  });
 }
 
 function classJobs(entry) {
@@ -897,11 +1341,12 @@ function renderClassJobResult(job) {
   const result = job.result_json;
   const ocrText = job.ocr_result?.layout_text || job.ocr_result?.text || job.input_text || "";
   const questions = result?.questions || [];
+  const previewUrl = job.file_preview_url || "";
   return `
     <div class="class-job-result">
       <strong>${job.uploaded_file?.name || job.job_type}</strong>
       <small>${job.source_type} / ${job.status} / ${job.material_type || "material"}</small>
-      ${job.file_data_url && job.source_type === "image" ? `<img class="uploaded-preview" src="${job.file_data_url}" alt="${escapeAttr(job.file_name || "アップロード画像")}" />` : ""}
+      ${previewUrl && job.source_type === "image" ? `<img class="uploaded-preview" src="${previewUrl}" alt="${escapeAttr(job.file_name || "アップロード画像")}" />` : ""}
       ${job.source_type === "pdf" ? `<p class="note-text">PDF: ${escapeHtml(job.file_name || job.uploaded_file?.name || "")}</p>` : ""}
       <div class="ai-status-box">
         <strong>AI処理状態</strong>
@@ -935,30 +1380,27 @@ async function enqueueImportJob(view) {
     return;
   }
   const file = view.querySelector("#file-input")?.files?.[0] || null;
-  const fileData = file ? await fileToDataUrl(file) : null;
-  const isPdf = file ? file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf") : false;
-  const job = {
-    id: `job_${crypto.randomUUID()}`,
-    job_type: `import_${kind}`,
-    source_type: file ? (isPdf ? "pdf" : "image") : "manual",
-    status: "pending",
-    created_at: new Date().toISOString(),
-    effective_from: effectiveInput?.value || null,
-    grade_filter: view.querySelector("#grade-filter")?.value || null,
-    file_name: file?.name || null,
-    file_type: file?.type || null,
-    file_size: file?.size || null,
-    file_data_url: fileData,
-    input_text: "",
-    ocr_result: null,
-    layout_blocks: [],
-    result_json: null,
-    error_message: null,
-  };
-  state.jobs.unshift(job);
-  saveState(STORAGE.jobs, state.jobs);
-  renderAll();
-  showToast("pendingジョブとして保存しました");
+  try {
+    showToast("SupabaseにAI処理依頼を保存しています");
+    const job = await createSupabaseAiJob({
+      file,
+      jobType: `import_${kind}`,
+      subject: kind === "annual_schedule" ? "年間予定" : kind === "timetable" ? "時間割" : "",
+      inputText: "",
+      prompt: "OCR結果のレイアウト構造を保ちながら、Study Managerへ反映する候補をJSON形式で整理してください。",
+      metadata: {
+        import_kind: kind,
+        effective_from: effectiveInput?.value || null,
+        grade_filter: view.querySelector("#grade-filter")?.value || "grade3",
+      },
+    });
+    state.jobs.unshift(job);
+    cacheAllState();
+    renderAll();
+    showToast("pending jobをSupabaseに作成しました");
+  } catch (error) {
+    showToast(`AI処理依頼を作成できませんでした: ${error.message}`);
+  }
 }
 
 function renderReviewPanel(kind) {
@@ -990,56 +1432,6 @@ function renderReviewPanel(kind) {
       <button class="ghost-button" type="button">無視</button>
     </div>
   `;
-}
-
-function downloadJobs() {
-  const blob = new Blob([JSON.stringify({ jobs: state.jobs }, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "jobs.json";
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-function importJobs(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const parsed = JSON.parse(String(reader.result));
-      const imported = Array.isArray(parsed.jobs) ? parsed.jobs : normalizeResultsFile(parsed);
-      const byId = new Map(state.jobs.map((job) => [job.id, job]));
-      imported.forEach((job) => byId.set(job.id, { ...(byId.get(job.id) || {}), ...job }));
-      state.jobs = Array.from(byId.values()).sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-      saveState(STORAGE.jobs, state.jobs);
-      renderAll();
-      showToast("AI結果を読み込みました");
-    } catch {
-      showToast("AI結果JSONを読み込めませんでした");
-    }
-  };
-  reader.readAsText(file);
-}
-
-function normalizeResultsFile(parsed) {
-  if (Array.isArray(parsed.results)) {
-    return parsed.results.map((result) => ({
-      id: result.job_id || result.id,
-      status: result.status || "completed",
-      processed_at: result.processed_at || new Date().toISOString(),
-      input_text: result.input_text || "",
-      ocr_result: result.ocr_result || null,
-      layout_blocks: result.layout_blocks || result.ocr_result?.blocks || [],
-      result_json: result.result_json || result,
-      error_message: result.error_message || null,
-    })).filter((job) => job.id);
-  }
-  if (parsed.job_id || parsed.id) {
-    return normalizeResultsFile({ results: [parsed] });
-  }
-  return [];
 }
 
 function jobCounts() {
@@ -1078,7 +1470,7 @@ function renderVerticalClassCard(entry, date = state.homeDate) {
 
 function renderTimetableCell(date, period) {
   const weekday = dayOfWeekMondayBase(date);
-  const entry = DATA.timetable.find((item) => item.weekday === weekday && item.period === period);
+  const entry = state.timetable.find((item) => item.weekday === weekday && item.period === period);
   if (!entry) return `<td class="class-cell empty"><span>—</span></td>`;
   return `
     <td>
@@ -1327,7 +1719,7 @@ function conicSegments(blocks) {
 
 function eventsOnDate(date) {
   const target = parseDate(date);
-  return DATA.events.filter((event) => target >= parseDate(event.start_date) && target <= parseDate(event.end_date));
+  return state.events.filter((event) => target >= parseDate(event.start_date) && target <= parseDate(event.end_date));
 }
 
 function todosForDate(date) {
@@ -1336,11 +1728,11 @@ function todosForDate(date) {
 
 function timetableForDate(date) {
   const weekday = dayOfWeekMondayBase(date);
-  return DATA.timetable.filter((entry) => entry.weekday === weekday);
+  return state.timetable.filter((entry) => entry.weekday === weekday);
 }
 
 function menuForDate(date) {
-  return DATA.menus[date] || {
+  return state.menus[date] || {
     breakfast: "未登録",
     lunch: "未登録",
     dinner: "未登録",
@@ -1350,7 +1742,7 @@ function menuForDate(date) {
 }
 
 function getCountdowns(fromDate) {
-  const eventCountdowns = DATA.events
+  const eventCountdowns = state.events
     .filter((event) => event.countdown_enabled && parseDate(event.start_date) >= parseDate(fromDate))
     .sort((a, b) => a.start_date.localeCompare(b.start_date));
   const todoCountdowns = state.todos
@@ -1484,15 +1876,6 @@ function nowLabel() {
   return new Intl.DateTimeFormat("ja-JP", { dateStyle: "short", timeStyle: "short" }).format(new Date());
 }
 
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error || new Error("ファイルを読み込めませんでした"));
-    reader.readAsDataURL(file);
-  });
-}
-
 function escapeAttr(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 }
@@ -1514,6 +1897,11 @@ function loadState(key, fallback) {
 }
 
 function saveState(key, value) {
+  saveLocalState(key, value);
+  persistSupabaseSoon();
+}
+
+function saveLocalState(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
