@@ -26,6 +26,10 @@ let syncState = {
   message: "Supabase未設定",
   lastJob: null,
   lastWorkerAt: null,
+  lastUploadResult: null,
+  lastAiJobResult: null,
+  lastError: null,
+  lastStorageCheck: null,
 };
 
 const routes = [
@@ -36,6 +40,8 @@ const routes = [
   { id: "import", label: "AI取り込み", icon: "upload" },
   { id: "settings", label: "設定", icon: "settings" },
 ];
+
+DATA.today = getTodayKey();
 
 let state = {
   route: "home",
@@ -48,7 +54,7 @@ let state = {
   plans: loadState(STORAGE.plans, seedPlans()),
   jobs: loadState(STORAGE.jobs, []),
   events: loadState(STORAGE.events, DATA.events),
-  menus: loadState(STORAGE.menus, DATA.menus),
+  menus: { ...DATA.menus, ...loadState(STORAGE.menus, DATA.menus) },
   timetable: loadState(STORAGE.timetable, DATA.timetable),
   studyLogs: loadState(STORAGE.studyLogs, []),
   subjectProgress: loadState(STORAGE.subjectProgress, []),
@@ -85,6 +91,14 @@ async function initSupabase() {
   if (!syncState.configured) {
     syncState.status = "offline";
     syncState.message = "supabase-config.jsにURLとanon keyを設定してください";
+    syncState.lastError = {
+      context: "supabase-config.js未設定",
+      message: "Supabase URL、anonKey、またはsupabase-jsが読み込めていません",
+      code: "",
+      details: "",
+      hint: "supabase-config.jsとindex.htmlのscript読み込みを確認してください",
+      at: new Date().toISOString(),
+    };
     renderAll();
     return;
   }
@@ -159,7 +173,7 @@ async function loadSupabaseData() {
     if (appState.todos) state.todos = appState.todos;
     if (appState.plans) state.plans = appState.plans;
     if (appState.events) state.events = appState.events;
-    if (appState.menus) state.menus = appState.menus;
+    if (appState.menus) state.menus = { ...DATA.menus, ...appState.menus };
     if (appState.timetable) state.timetable = appState.timetable;
     if (appState.studyLogs) state.studyLogs = appState.studyLogs;
     if (appState.subjectProgress) state.subjectProgress = appState.subjectProgress;
@@ -178,6 +192,7 @@ async function loadSupabaseData() {
   } catch (error) {
     syncState.status = "error";
     syncState.message = error.message;
+    recordSupabaseError("Supabase同期エラー", error);
     showToast(`Supabase同期エラー: ${error.message}`);
   } finally {
     isApplyingRemote = false;
@@ -366,11 +381,18 @@ function sanitizeFileName(name) {
 
 function requireSupabaseUser() {
   if (!supabaseClient) {
+    recordSupabaseError("Supabase未設定", new Error("supabase-config.jsにURLとanon keyを設定してください"));
     showToast("supabase-config.jsにURLとanon keyを設定してください");
     return false;
   }
   if (!syncState.user) {
+    recordSupabaseError("Supabase未ログイン", new Error("SupabaseにログインしてからAI依頼を作成してください"));
     showToast("SupabaseにログインしてからAI依頼を作成してください");
+    return false;
+  }
+  if (!syncState.user.id) {
+    recordSupabaseError("user.id未取得", new Error("ログインユーザーのuser.idを取得できません"));
+    showToast("ログインユーザーのuser.idを取得できません");
     return false;
   }
   return true;
@@ -381,8 +403,88 @@ function inputTypeForFile(file) {
   return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf") ? "pdf" : "image";
 }
 
+function recordSupabaseError(context, error) {
+  const message = supabaseErrorMessage(error);
+  syncState.lastError = {
+    context,
+    message,
+    code: error?.code || error?.statusCode || error?.status || "",
+    details: error?.details || "",
+    hint: error?.hint || "",
+    at: new Date().toISOString(),
+  };
+  syncState.status = "error";
+  syncState.message = `${context}: ${message}`;
+}
+
+function supabaseErrorMessage(error) {
+  if (!error) return "不明なエラー";
+  const raw = error.message || error.error_description || error.details || String(error);
+  const lower = raw.toLowerCase();
+  if (lower.includes("row-level security") || lower.includes("rls") || lower.includes("policy")) {
+    return `RLS policy violation: ${raw}`;
+  }
+  if (lower.includes("bucket") && lower.includes("not")) {
+    return `Storage bucketがありません: ${raw}`;
+  }
+  if (lower.includes("column") || lower.includes("schema cache")) {
+    return `DBカラム不一致: ${raw}`;
+  }
+  return raw;
+}
+
+function recordUploadResult(result) {
+  syncState.lastUploadResult = {
+    ...result,
+    at: new Date().toISOString(),
+  };
+}
+
+function recordAiJobResult(result) {
+  syncState.lastAiJobResult = {
+    ...result,
+    at: new Date().toISOString(),
+  };
+}
+
+function validateUploadPath(filePath, userId) {
+  if (!filePath || !userId || !filePath.startsWith(`${userId}/`)) {
+    throw new Error(`file_pathが不正です。Storage pathは {user_id}/{job_id}/{file_name} 形式にしてください: ${filePath || "空"}`);
+  }
+  const parts = filePath.split("/");
+  if (parts.length < 3 || parts[0] !== userId || !parts[1] || !parts[2]) {
+    throw new Error(`file_pathが不正です。1階層目はuser.id、2階層目はjob_id、3階層目はfile_nameが必要です: ${filePath}`);
+  }
+}
+
+async function verifyStorageBucketAccess(userId) {
+  try {
+    const { data, error } = await supabaseClient.storage.from(SUPABASE_BUCKET).list(userId, { limit: 1 });
+    if (error) throw error;
+    syncState.lastStorageCheck = {
+      ok: true,
+      bucket: SUPABASE_BUCKET,
+      checkedPath: userId,
+      message: "Storage bucketへアクセスできます",
+      itemCount: data?.length || 0,
+      at: new Date().toISOString(),
+    };
+    return true;
+  } catch (error) {
+    syncState.lastStorageCheck = {
+      ok: false,
+      bucket: SUPABASE_BUCKET,
+      checkedPath: userId,
+      message: supabaseErrorMessage(error),
+      at: new Date().toISOString(),
+    };
+    recordSupabaseError("Storage bucket確認失敗", error);
+    throw error;
+  }
+}
+
 async function createSupabaseAiJob({ file = null, jobType, subject = "", inputText = "", prompt = "", metadata = {} }) {
-  if (!requireSupabaseUser()) throw new Error("Supabase login is required.");
+  if (!requireSupabaseUser()) throw new Error(syncState.lastError?.message || "Supabase未ログイン");
   const userId = syncState.user.id;
   const jobId = crypto.randomUUID();
   const inputType = inputTypeForFile(file);
@@ -396,15 +498,46 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
   } : null;
 
   if (file) {
+    if (!(file instanceof File)) {
+      const error = new Error("file inputからFileオブジェクトを取得できていません");
+      recordSupabaseError("File取得失敗", error);
+      throw error;
+    }
     filePath = `${userId}/${jobId}/${sanitizeFileName(file.name)}`;
-    const { error: uploadError } = await supabaseClient.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
-      cacheControl: "3600",
-      contentType: file.type || "application/octet-stream",
-      upsert: false,
-    });
-    if (uploadError) throw uploadError;
-    const { data: publicData } = supabaseClient.storage.from(SUPABASE_BUCKET).getPublicUrl(filePath);
-    fileUrl = publicData?.publicUrl || null;
+    validateUploadPath(filePath, userId);
+    await verifyStorageBucketAccess(userId);
+    try {
+      const { error: uploadError } = await supabaseClient.storage.from(SUPABASE_BUCKET).upload(filePath, file, {
+        cacheControl: "3600",
+        contentType: file.type || "application/octet-stream",
+        upsert: false,
+      });
+      if (uploadError) throw uploadError;
+      const { data: signedData, error: signedError } = await supabaseClient.storage.from(SUPABASE_BUCKET).createSignedUrl(filePath, 60 * 60);
+      if (signedError) throw signedError;
+      fileUrl = signedData?.signedUrl || null;
+      recordUploadResult({
+        ok: true,
+        bucket: SUPABASE_BUCKET,
+        file_path: filePath,
+        file_url: fileUrl,
+        file_name: file.name,
+        file_size: file.size,
+        input_type: inputType,
+        message: "Storage upload succeeded",
+      });
+    } catch (error) {
+      recordUploadResult({
+        ok: false,
+        bucket: SUPABASE_BUCKET,
+        file_path: filePath,
+        file_name: file.name,
+        input_type: inputType,
+        message: supabaseErrorMessage(error),
+      });
+      recordSupabaseError("Storage upload failed", error);
+      throw error;
+    }
   }
 
   const jobRow = {
@@ -426,30 +559,57 @@ async function createSupabaseAiJob({ file = null, jobType, subject = "", inputTe
       file_name: fileMeta?.name || null,
       file_type: fileMeta?.type || null,
       file_size: fileMeta?.size || null,
+      source: metadata.source || "ai_import_center",
       created_from: "github_pages",
     },
     created_at: now,
     updated_at: now,
   };
-  const { data: inserted, error: jobError } = await supabaseClient.from("ai_jobs").insert(jobRow).select("*").single();
-  if (jobError) throw jobError;
 
   if (filePath && fileMeta) {
-    const { error: fileError } = await supabaseClient.from("uploaded_files").insert({
-      user_id: userId,
-      ai_job_id: jobId,
-      subject,
-      file_name: fileMeta.name,
-      mime_type: fileMeta.type,
-      size_bytes: fileMeta.size,
-      storage_bucket: SUPABASE_BUCKET,
-      storage_path: filePath,
-      public_url: fileUrl,
-      related_date: metadata.related_date || metadata.related_class?.date || null,
-      related_period: metadata.related_period || metadata.related_class?.period || null,
-      metadata,
+    try {
+      const { error: fileError } = await supabaseClient.from("uploaded_files").insert({
+        user_id: userId,
+        storage_bucket: SUPABASE_BUCKET,
+        file_path: filePath,
+        file_url: fileUrl,
+        file_name: fileMeta.name,
+        file_type: fileMeta.type,
+        file_size: fileMeta.size,
+        related_subject: subject,
+        related_date: metadata.related_date || metadata.related_class?.date || null,
+        related_period: metadata.related_period || metadata.related_class?.period || null,
+      });
+      if (fileError) throw fileError;
+    } catch (error) {
+      recordSupabaseError("uploaded_files insert failed", error);
+      throw error;
+    }
+  }
+
+  let inserted = null;
+  try {
+    const { data, error: jobError } = await supabaseClient.from("ai_jobs").insert(jobRow).select("*").single();
+    if (jobError) throw jobError;
+    inserted = data;
+    recordAiJobResult({
+      ok: true,
+      id: inserted.id,
+      status: inserted.status,
+      job_type: inserted.job_type,
+      file_path: inserted.file_path,
+      message: "ai_jobs pending insert succeeded",
     });
-    if (fileError) throw fileError;
+  } catch (error) {
+    recordAiJobResult({
+      ok: false,
+      id: jobId,
+      job_type: jobType,
+      file_path: filePath,
+      message: supabaseErrorMessage(error),
+    });
+    recordSupabaseError("ai_jobs insert failed", error);
+    throw error;
   }
 
   const mapped = (await hydrateJobSignedUrls(mapAiJobs([inserted], [])))[0];
@@ -488,6 +648,7 @@ function renderHome() {
   const timetable = timetableForDate(date);
   const countdowns = getCountdowns(date).slice(0, 3);
   const menu = menuForDate(date);
+  const counts = jobCounts();
   const view = document.getElementById("home-view");
   view.innerHTML = `
     <div class="page-heading tight">
@@ -512,7 +673,6 @@ function renderHome() {
           <div id="home-pie" class="pie-chart large"></div>
           <div>
             <div id="home-legend" class="legend compact-legend"></div>
-            <button class="secondary-action full small-top" id="copy-ideal-actual-home" type="button">理想をコピーして実際を作る</button>
           </div>
         </div>
       </section>
@@ -523,7 +683,7 @@ function renderHome() {
             <h2>今日はこれだけやればOK</h2>
           </div>
         </div>
-        <div class="todo-list compact-list">${todayTodos.slice(0, 5).map(renderTodoItem).join("") || emptyText("今日のTodoはありません")}</div>
+        <div class="todo-list compact-list home-todo-list">${todayTodos.map(renderTodoItem).join("") || emptyText("今日のTodoはありません")}</div>
         <div class="button-row">
           <button class="secondary-action" data-route="questions" type="button">今日の問題を解く</button>
           <button class="ghost-button" data-route="todo" type="button">Todo管理</button>
@@ -547,7 +707,12 @@ function renderHome() {
       <section class="panel menu-home">
         <p class="section-kicker">八太郎館</p>
         <h2>今日の献立</h2>
-        ${renderMenu(menu)}
+        ${renderCompactMenu(menu)}
+      </section>
+      <section class="panel ai-home">
+        <p class="section-kicker">AI処理</p>
+        <h2>処理状況</h2>
+        ${renderAiStatusCompact(counts)}
       </section>
     </div>
   `;
@@ -559,7 +724,6 @@ function renderHome() {
     state.homeDate = DATA.today;
     renderHome();
   });
-  view.querySelector("#copy-ideal-actual-home").addEventListener("click", () => copyIdealToActual(date));
   bindRouteButtons(view);
   bindCalendarJumpButtons(view);
 }
@@ -977,6 +1141,11 @@ function renderSyncPanel(options = {}) {
   const user = syncState.user;
   const job = syncState.lastJob;
   const isConfigured = syncState.configured;
+  const counts = jobCounts();
+  const upload = syncState.lastUploadResult;
+  const aiJob = syncState.lastAiJobResult;
+  const lastError = syncState.lastError;
+  const storage = syncState.lastStorageCheck;
   const userEmail = user?.email || "メール未取得";
   const statusLabel = user ? "同期: 有効" : isConfigured ? "同期: ログイン待ち" : "同期: 未設定";
   return `
@@ -1002,15 +1171,29 @@ function renderSyncPanel(options = {}) {
         </div>
         ${isConfigured ? `<p class="note-text">メールに届いたリンクを開くと、このStudy Managerへ戻ってログインできます。</p>` : ""}
       `}
+      ${lastError ? `
+        <div class="error-panel">
+          <strong>${escapeHtml(lastError.context)}</strong>
+          <span>${escapeHtml(lastError.message)}</span>
+          ${lastError.code ? `<small>code/status: ${escapeHtml(lastError.code)}</small>` : ""}
+          ${lastError.hint ? `<small>hint: ${escapeHtml(lastError.hint)}</small>` : ""}
+        </div>
+      ` : ""}
       ${showDebug ? `<div class="debug-grid">
+        <div><span>ログイン状態</span><strong>${user ? "ログイン済み" : isConfigured ? "未ログイン" : "Supabase未設定"}</strong></div>
+        <div><span>user.id</span><strong>${user?.id || "-"}</strong></div>
+        <div><span>Storage bucket名</span><strong>${SUPABASE_BUCKET}</strong></div>
+        <div><span>Storage bucket確認</span><strong>${storage ? `${storage.ok ? "OK" : "NG"} / ${storage.message}` : "未確認"}</strong></div>
+        <div><span>最後のアップロード結果</span><strong>${upload ? `${upload.ok ? "OK" : "NG"} / ${upload.file_path || "-"} / ${upload.message}` : "なし"}</strong></div>
+        <div><span>最後のai_jobs作成結果</span><strong>${aiJob ? `${aiJob.ok ? "OK" : "NG"} / ${aiJob.status || "-"} / ${aiJob.id || "-"} / ${aiJob.message}` : "なし"}</strong></div>
+        <div><span>最後のエラー内容</span><strong>${lastError ? `${lastError.context}: ${lastError.message}` : "-"}</strong></div>
+        <div><span>pending件数</span><strong>${counts.pending}</strong></div>
+        <div><span>processing件数</span><strong>${counts.processing}</strong></div>
+        <div><span>completed件数</span><strong>${counts.completed}</strong></div>
+        <div><span>failed件数</span><strong>${counts.failed}</strong></div>
         <div><span>last job</span><strong>${job?.id || "なし"}</strong></div>
-        <div><span>status</span><strong>${job?.status || "-"}</strong></div>
-        <div><span>result_id</span><strong>${job?.result_id || "-"}</strong></div>
-        <div><span>model</span><strong>${job?.model_name || state.settings.ollamaModel}</strong></div>
-        <div><span>created_at</span><strong>${job?.created_at || "-"}</strong></div>
-        <div><span>updated_at</span><strong>${job?.updated_at || "-"}</strong></div>
         <div><span>worker time</span><strong>${job?.worker_processed_at || syncState.lastWorkerAt || "-"}</strong></div>
-        <div><span>error</span><strong>${job?.error_message || "-"}</strong></div>
+        <div><span>job error</span><strong>${job?.error_message || "-"}</strong></div>
       </div>` : ""}
       ${job?.ocr_result?.text || job?.ocr_result?.layout_text ? `
         <details class="job-detail-block">
@@ -1284,6 +1467,7 @@ function bindCalendarJumpButtons(root) {
 function openClassSheet(entry) {
   state.activeClass = entry;
   const relatedJobs = classJobs(entry);
+  const lastError = syncState.lastError;
   document.getElementById("sheet-period").textContent = `${formatShortDate(entry.date)} / ${entry.period}限`;
   document.getElementById("sheet-title").textContent = entry.subject;
   document.getElementById("sheet-meta").innerHTML = `
@@ -1295,6 +1479,7 @@ function openClassSheet(entry) {
       <span>アップロード済み: ${relatedJobs.length}件</span>
       <span>pending: ${relatedJobs.filter((job) => job.status === "pending").length} / processing: ${relatedJobs.filter((job) => job.status === "processing").length} / completed: ${relatedJobs.filter((job) => job.status === "completed").length} / failed: ${relatedJobs.filter((job) => job.status === "failed").length}</span>
     </div>
+    ${lastError ? `<div class="error-panel compact-error"><strong>${escapeHtml(lastError.context)}</strong><span>${escapeHtml(lastError.message)}</span></div>` : ""}
     ${relatedJobs.map(renderClassJobResult).join("")}
   `;
   document.getElementById("class-sheet").classList.add("open");
@@ -1314,6 +1499,9 @@ async function handleClassUpload(input) {
     renderImportCenter();
     showToast("pending jobをSupabaseに作成しました。PC側workerが処理します");
   } catch (error) {
+    recordSupabaseError("授業カードアップロード失敗", error);
+    openClassSheet(state.activeClass);
+    renderImportCenter();
     showToast(`AI jobを作成できませんでした: ${error.message}`);
   } finally {
     input.value = "";
@@ -1340,6 +1528,8 @@ async function buildClassUploadJob(file, kind, classInfo) {
       related_period: classInfo.period,
       related_class: relatedClass,
       material_type: kind,
+      file_name: file.name,
+      source: "class_detail_upload",
     },
   });
 }
@@ -1364,7 +1554,7 @@ function renderClassJobResult(job) {
       ${job.source_type === "pdf" ? `<p class="note-text">PDF: ${escapeHtml(job.file_name || job.uploaded_file?.name || "")}</p>` : ""}
       <div class="ai-status-box">
         <strong>AI処理状態</strong>
-        <span>${job.status}</span>
+        <span>${job.status === "pending" ? "AI処理待ち" : job.status}</span>
         ${job.error_message ? `<span class="job-error">${escapeHtml(job.error_message)}</span>` : ""}
       </div>
       ${ocrText ? `
@@ -1406,6 +1596,9 @@ async function enqueueImportJob(view) {
         import_kind: kind,
         effective_from: effectiveInput?.value || null,
         grade_filter: view.querySelector("#grade-filter")?.value || "grade3",
+        related_date: DATA.today,
+        file_name: file?.name || null,
+        source: "ai_import_center",
       },
     });
     state.jobs.unshift(job);
@@ -1413,6 +1606,8 @@ async function enqueueImportJob(view) {
     renderAll();
     showToast("pending jobをSupabaseに作成しました");
   } catch (error) {
+    recordSupabaseError("AI取り込みセンター登録失敗", error);
+    renderAll();
     showToast(`AI処理依頼を作成できませんでした: ${error.message}`);
   }
 }
@@ -1514,7 +1709,38 @@ function renderMenu(menu) {
       <div class="meal"><strong>昼</strong><span>${menu.lunch}</span></div>
       <div class="meal"><strong>夕</strong><span>${menu.dinner}</span></div>
       <div class="meal"><strong>kcal</strong><span>${menu.kcal || "未設定"}${menu.event_note ? ` / ${menu.event_note}` : ""}</span></div>
+      ${menu.needs_review ? `<div class="meal review-meal"><strong>確認</strong><span>needs_review</span></div>` : ""}
     </div>
+  `;
+}
+
+function renderCompactMenu(menu) {
+  return `
+    <details class="menu-compact">
+      <summary>
+        <span><strong>朝</strong>${escapeHtml(shortMeal(menu.breakfast))}</span>
+        <span><strong>昼</strong>${escapeHtml(shortMeal(menu.lunch))}</span>
+        <span><strong>夕</strong>${escapeHtml(shortMeal(menu.dinner))}</span>
+      </summary>
+      ${renderMenu(menu)}
+    </details>
+    <p class="menu-kcal-line">${menu.kcal || "kcal未設定"} kcal${menu.event_note ? ` / ${escapeHtml(menu.event_note)}` : ""}${menu.needs_review ? " / needs_review" : ""}</p>
+  `;
+}
+
+function shortMeal(text) {
+  return String(text || "未登録").split("/").slice(0, 2).map((item) => item.trim()).join(" / ");
+}
+
+function renderAiStatusCompact(counts) {
+  return `
+    <div class="ai-count-row">
+      <span><strong>${counts.pending}</strong>pending</span>
+      <span><strong>${counts.processing}</strong>processing</span>
+      <span><strong>${counts.completed}</strong>completed</span>
+      <span><strong>${counts.failed}</strong>failed</span>
+    </div>
+    <button class="ghost-button full" data-route="import" type="button">AI取り込みセンター</button>
   `;
 }
 
@@ -1729,6 +1955,13 @@ function conicSegments(blocks) {
   });
   if (cursor < 100) filled.push({ color: DATA.categories.other.color, start: cursor, end: 100 });
   return filled;
+}
+
+function getTodayKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function eventsOnDate(date) {

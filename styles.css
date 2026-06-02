@@ -256,14 +256,37 @@ button {
 
 .home-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 0.65fr);
+  grid-template-columns: minmax(300px, 0.95fr) minmax(320px, 1fr) minmax(280px, 0.8fr);
   grid-template-areas:
-    "hero action"
-    "schedule menu"
-    "schedule events"
-    "schedule countdown";
+    "hero action events"
+    "hero action menu"
+    "hero schedule ai"
+    "hero schedule countdown";
   gap: 12px;
   align-items: start;
+}
+
+.home-layout .panel {
+  padding: 13px 14px;
+}
+
+.home-layout .panel h2 {
+  margin-bottom: 8px;
+  font-size: 17px;
+}
+
+.home-layout .mini-timetable {
+  gap: 6px;
+}
+
+.home-layout .class-row {
+  padding: 7px 8px;
+}
+
+.home-layout .period-badge,
+.home-layout .upload-mini {
+  min-height: 23px;
+  font-size: 11px;
 }
 
 .hero-panel {
@@ -290,10 +313,14 @@ button {
   grid-area: countdown;
 }
 
+.ai-home {
+  grid-area: ai;
+}
+
 .home-hero-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
 }
 
@@ -304,7 +331,7 @@ button {
 }
 
 .pie-chart.large {
-  width: min(100%, 300px);
+  width: min(100%, 250px);
 }
 
 .clock-chart {
@@ -407,6 +434,12 @@ button {
   gap: 7px;
 }
 
+.home-todo-list {
+  max-height: 330px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
 .todo-item {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
@@ -488,6 +521,26 @@ button {
 .job-error {
   margin: 8px 0 0;
   color: var(--red);
+}
+
+.error-panel {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #f0b7ad;
+  border-radius: var(--radius);
+  background: #fff2f0;
+  color: #7a241f;
+}
+
+.error-panel span,
+.error-panel small {
+  overflow-wrap: anywhere;
+}
+
+.compact-error {
+  margin: 8px 0;
 }
 
 .job-json {
@@ -578,6 +631,72 @@ button {
 
 .meal strong {
   color: var(--green);
+}
+
+.review-meal strong {
+  color: var(--orange);
+}
+
+.menu-compact {
+  display: grid;
+  gap: 8px;
+}
+
+.menu-compact summary {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.menu-compact summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-compact summary span {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 7px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.menu-compact summary strong {
+  color: var(--green);
+}
+
+.menu-compact .menu-block {
+  margin-top: 8px;
+}
+
+.menu-kcal-line {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ai-count-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.ai-count-row span {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ai-count-row strong {
+  color: var(--text);
+  font-size: 18px;
 }
 
 .segmented {
@@ -1392,6 +1511,7 @@ button {
   .action-panel,
   .timetable-home,
   .menu-home,
+  .ai-home,
   .info-panel {
     grid-area: auto !important;
   }
@@ -1426,6 +1546,45 @@ button {
   .bottom-item.active {
     background: var(--blue-soft);
     color: var(--blue);
+  }
+}
+
+@media (min-width: 820px) and (max-width: 1120px) {
+  .home-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 0.8fr);
+    grid-template-areas:
+      "hero action"
+      "schedule menu"
+      "schedule events"
+      "countdown ai";
+  }
+
+  .hero-panel {
+    grid-area: hero !important;
+  }
+
+  .action-panel {
+    grid-area: action !important;
+  }
+
+  .timetable-home {
+    grid-area: schedule !important;
+  }
+
+  .menu-home {
+    grid-area: menu !important;
+  }
+
+  .events-home {
+    grid-area: events !important;
+  }
+
+  .countdown-home {
+    grid-area: countdown !important;
+  }
+
+  .ai-home {
+    grid-area: ai !important;
   }
 }
 
