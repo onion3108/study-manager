@@ -117,14 +117,15 @@ async function signInWithEmail(email) {
     showToast("Supabaseが未設定です");
     return;
   }
+  const redirectTo = `${location.origin}${location.pathname}`;
   const { error } = await supabaseClient.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: location.href },
+    options: { emailRedirectTo: redirectTo },
   });
   if (error) {
     showToast(`ログインメール送信に失敗: ${error.message}`);
   } else {
-    showToast("ログイン用メールを送信しました");
+    showToast("ログイン用メールを送信しました。メール内のリンクを開いてください");
   }
 }
 
@@ -876,7 +877,7 @@ function renderTodoPage() {
     });
     saveState(STORAGE.todos, state.todos);
     renderAll();
-    showToast("Todoを追加しました");
+    showToast(isSupabaseReady() ? "Todoを追加しました。Supabaseへ同期します" : "Todoをローカル保存しました。同期にはSupabaseログインが必要です");
   });
   bindTodoCheckboxes(view);
 }
@@ -971,26 +972,37 @@ function renderImportCenter() {
   view.querySelector("#refresh-supabase").addEventListener("click", loadSupabaseData);
 }
 
-function renderSyncPanel() {
+function renderSyncPanel(options = {}) {
+  const { showDebug = true } = options;
   const user = syncState.user;
   const job = syncState.lastJob;
+  const isConfigured = syncState.configured;
+  const userEmail = user?.email || "メール未取得";
+  const statusLabel = user ? "同期: 有効" : isConfigured ? "同期: ログイン待ち" : "同期: 未設定";
   return `
     <section class="panel sync-panel">
       <div class="panel-header compact">
         <div>
-          <p class="section-kicker">Supabase Sync</p>
-          <h2>${syncState.status}</h2>
+          <p class="section-kicker">Supabaseログイン</p>
+          <h2>${statusLabel}</h2>
         </div>
         ${user ? `<button id="supabase-signout" class="ghost-button" type="button">ログアウト</button>` : ""}
       </div>
       <p class="note-text">${escapeHtml(syncState.message || "")}</p>
-      ${user ? `<p class="note-text">user_id: ${escapeHtml(user.id)}</p>` : `
+      ${user ? `
+        <div class="sync-user-box">
+          <strong>ログイン中: ${escapeHtml(userEmail)}</strong>
+          <span>user_id: ${escapeHtml(user.id)}</span>
+        </div>
+      ` : `
+        <p class="note-text">Web同期とAI処理依頼を使うには、Supabase Authでメールログインしてください。</p>
         <div class="sync-login-row">
           <input id="supabase-email" type="email" placeholder="メールアドレス" />
           <button id="supabase-login" class="primary-action" type="button">ログインメール送信</button>
         </div>
+        ${isConfigured ? `<p class="note-text">メールに届いたリンクを開くと、このStudy Managerへ戻ってログインできます。</p>` : ""}
       `}
-      <div class="debug-grid">
+      ${showDebug ? `<div class="debug-grid">
         <div><span>last job</span><strong>${job?.id || "なし"}</strong></div>
         <div><span>status</span><strong>${job?.status || "-"}</strong></div>
         <div><span>result_id</span><strong>${job?.result_id || "-"}</strong></div>
@@ -999,7 +1011,7 @@ function renderSyncPanel() {
         <div><span>updated_at</span><strong>${job?.updated_at || "-"}</strong></div>
         <div><span>worker time</span><strong>${job?.worker_processed_at || syncState.lastWorkerAt || "-"}</strong></div>
         <div><span>error</span><strong>${job?.error_message || "-"}</strong></div>
-      </div>
+      </div>` : ""}
       ${job?.ocr_result?.text || job?.ocr_result?.layout_text ? `
         <details class="job-detail-block">
           <summary>ocr_text preview</summary>
@@ -1026,6 +1038,7 @@ function renderSettings() {
   const view = document.getElementById("settings-view");
   view.innerHTML = `
     <div class="page-heading"><div><p class="eyebrow">Settings</p><h1>設定</h1></div></div>
+    ${renderSyncPanel({ showDebug: false })}
     <div class="settings-sections">
       <section class="panel">
         <p class="section-kicker">プロフィール</p>
@@ -1096,6 +1109,7 @@ function renderSettings() {
       </section>
     </div>
   `;
+  bindSyncPanel(view);
   view.querySelector("#save-settings").addEventListener("click", () => {
     state.settings = {
       ...state.settings,
@@ -1104,7 +1118,7 @@ function renderSettings() {
       defaultQuestionCount: Number(view.querySelector("#setting-question-count").value) || 10,
     };
     saveState(STORAGE.settings, state.settings);
-    showToast("保存しました");
+    showToast(isSupabaseReady() ? "設定を保存しました。Supabaseへ同期します" : "設定をローカル保存しました。同期にはSupabaseログインが必要です");
     renderAll();
   });
 }

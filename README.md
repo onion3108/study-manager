@@ -71,6 +71,34 @@ window.STUDY_MANAGER_SUPABASE = {
 
 anon keyはWebに置いてよい公開用キーです。service role keyは絶対にWebへ置かないでください。
 
+## GitHub Pagesでログインする方法
+
+Supabase側で以下を設定してください。
+
+```text
+Authentication
+-> Providers
+-> Email を有効化
+
+Authentication
+-> URL Configuration
+-> Site URL
+-> https://onion3108.github.io/study-manager/
+```
+
+Web側にはPublishable keyまたはLegacy anon keyだけを設定します。service role keyやsecret keyはWeb側に置かず、PC worker用の`.env`だけに保存してください。
+
+ログイン手順:
+
+1. GitHub PagesのStudy Managerを開きます。
+2. `設定`または`AI取り込みセンター`を開きます。
+3. `Supabaseログイン`カードにメールアドレスを入力します。
+4. `ログインメール送信`を押します。
+5. Supabaseから届いたメールリンクを開きます。
+6. Study Managerに戻ると、ログイン中のメールアドレスと同期状態が表示されます。
+
+未ログイン時はTodoや設定はlocalStorageへ一時保存できますが、PC/スマホ同期、画像/PDFアップロード、`ai_jobs`作成、AI結果取得にはログインが必要です。
+
 ## 同期対象
 
 正本データはSupabaseに保存します。localStorageは一時キャッシュです。

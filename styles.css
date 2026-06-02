@@ -1014,6 +1014,21 @@ button {
   font: inherit;
 }
 
+.sync-user-box {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.sync-user-box span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
 .debug-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
