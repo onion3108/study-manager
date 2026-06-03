@@ -258,9 +258,10 @@ button {
   display: grid;
   grid-template-columns: minmax(300px, 0.95fr) minmax(320px, 1fr) minmax(280px, 0.8fr);
   grid-template-areas:
-    "hero action events"
-    "hero schedule menu"
-    "ai schedule countdown";
+    "action homework events"
+    "schedule homework menu"
+    "schedule weekly countdown"
+    "hero stats ai";
   gap: 12px;
   align-items: start;
 }
@@ -335,6 +336,150 @@ button {
 
 .ai-home {
   grid-area: ai;
+}
+
+.homework-home {
+  grid-area: homework;
+}
+
+.homework-stats-home {
+  grid-area: stats;
+}
+
+.weekly-home {
+  grid-area: weekly;
+}
+
+.homework-list,
+.weekly-agenda {
+  display: grid;
+  gap: 7px;
+}
+
+.homework-home .homework-list {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.homework-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+}
+
+.homework-item input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green);
+}
+
+.homework-title {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-weight: 800;
+}
+
+.homework-title em {
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: #e8f6ef;
+  color: var(--green);
+  font-style: normal;
+  font-size: 11px;
+}
+
+.homework-item.completed {
+  opacity: 0.62;
+}
+
+.homework-item.completed .homework-title {
+  text-decoration: line-through;
+}
+
+.homework-item.overdue,
+.homework-week-item.overdue {
+  border-color: #f0b7ad;
+  background: #fff7f5;
+}
+
+.recovery-box {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 8px;
+  padding: 8px;
+  border-radius: var(--radius);
+  background: #fff8f4;
+  border: 1px solid #ffd9c9;
+  color: #7a3b18;
+}
+
+.recovery-box span {
+  font-size: 12px;
+}
+
+.homework-stat-row,
+.metric-grid.homework-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.homework-stat-row span,
+.homework-metrics div {
+  padding: 8px;
+  border-radius: var(--radius);
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.homework-metrics strong {
+  display: block;
+  color: var(--text);
+  font-size: 18px;
+}
+
+.weekly-agenda-day {
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+}
+
+.weekly-agenda-day.today {
+  border-color: #aac4ff;
+  background: var(--blue-soft);
+}
+
+.weekly-agenda-day strong span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agenda-chip {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  max-width: 100%;
+  margin: 0 5px 5px 0;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.agenda-chip b {
+  color: var(--green);
 }
 
 .home-hero-grid {
@@ -752,6 +897,7 @@ button {
 .compare-grid,
 .day-practical-grid,
 .todo-page-grid,
+.homework-page-grid,
 .import-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -762,6 +908,85 @@ button {
 .day-timetable-panel,
 .table-panel {
   grid-column: 1 / -1;
+}
+
+.homework-week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(160px, 1fr));
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.homework-day-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 160px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f8fafc;
+}
+
+.homework-day-card.today {
+  border-color: #aac4ff;
+  background: var(--blue-soft);
+}
+
+.homework-day-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.homework-week-item {
+  display: grid;
+  gap: 6px;
+}
+
+.homework-week-item select {
+  min-height: 32px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.draft-pie {
+  margin: 8px auto 10px;
+  width: min(100%, 230px);
+}
+
+.quick-template-row,
+.duration-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.duration-controls span {
+  min-width: 48px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.mini-chip {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.understanding-slider {
+  display: grid;
+  gap: 4px;
+}
+
+.understanding-slider input {
+  width: 100%;
 }
 
 .metric-grid,
@@ -1441,7 +1666,7 @@ button {
 
 .block-editor {
   display: grid;
-  grid-template-columns: 130px minmax(180px, 1fr) 120px 120px 90px 74px;
+  grid-template-columns: 130px minmax(160px, 1fr) 110px 110px minmax(220px, 1.4fr) minmax(160px, 1fr) 74px;
   gap: 8px;
   align-items: center;
   padding: 8px;
@@ -1522,6 +1747,7 @@ button {
   .compare-grid,
   .day-practical-grid,
   .todo-page-grid,
+  .homework-page-grid,
   .import-grid {
     grid-template-columns: 1fr;
     grid-template-areas: none;
@@ -1532,6 +1758,9 @@ button {
   .timetable-home,
   .menu-home,
   .ai-home,
+  .homework-home,
+  .homework-stats-home,
+  .weekly-home,
   .info-panel {
     grid-area: auto !important;
   }
@@ -1543,7 +1772,7 @@ button {
     bottom: 0;
     z-index: 20;
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(7, 1fr);
     gap: 2px;
     padding: 7px;
     border-top: 1px solid var(--line);
@@ -1574,8 +1803,9 @@ button {
     grid-template-columns: minmax(0, 1fr) minmax(300px, 0.8fr);
     grid-template-areas:
       "action schedule"
-      "hero schedule"
-      "ai menu"
+      "homework schedule"
+      "weekly menu"
+      "hero ai"
       "events countdown";
   }
 
@@ -1606,6 +1836,18 @@ button {
   .ai-home {
     grid-area: ai !important;
   }
+
+  .homework-home {
+    grid-area: homework !important;
+  }
+
+  .homework-stats-home {
+    grid-area: stats !important;
+  }
+
+  .weekly-home {
+    grid-area: weekly !important;
+  }
 }
 
 @media (max-width: 760px) {
@@ -1624,6 +1866,8 @@ button {
   .metric-grid,
   .settings-grid,
   .problem-grid,
+  .homework-stat-row,
+  .metric-grid.homework-metrics,
   .form-grid.two,
   .todo-columns,
   .status-grid {

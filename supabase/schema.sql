@@ -63,6 +63,39 @@ create table if not exists todos (
   unique(user_id, client_id)
 );
 
+create table if not exists homeworks (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  client_id text,
+  title text not null,
+  subject text,
+  description text,
+  due_date date,
+  planned_date date,
+  week_start_date date,
+  completed boolean default false,
+  completed_at timestamptz,
+  completed_late boolean default false,
+  penalty_status text default 'none',
+  penalty_count int default 0,
+  raw jsonb not null default '{}'::jsonb,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  unique(user_id, client_id)
+);
+
+create table if not exists weekly_plans (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  date date not null,
+  title text not null,
+  type text not null default 'event',
+  source_id uuid,
+  raw jsonb not null default '{}'::jsonb,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
 create table if not exists calendar_events (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -155,6 +188,19 @@ create table if not exists understanding_scores (
   raw jsonb not null default '{}'::jsonb
 );
 
+create table if not exists study_metrics (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  date date not null,
+  subject text not null,
+  minutes int default 0,
+  understanding int default 0,
+  raw jsonb not null default '{}'::jsonb,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  unique(user_id, date, subject)
+);
+
 create table if not exists uploaded_files (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -233,6 +279,8 @@ alter table app_settings enable row level security;
 alter table notification_settings enable row level security;
 alter table subjects enable row level security;
 alter table todos enable row level security;
+alter table homeworks enable row level security;
+alter table weekly_plans enable row level security;
 alter table calendar_events enable row level security;
 alter table schedules enable row level security;
 alter table important_events enable row level security;
@@ -240,6 +288,7 @@ alter table daily_plans enable row level security;
 alter table study_logs enable row level security;
 alter table subject_progress enable row level security;
 alter table understanding_scores enable row level security;
+alter table study_metrics enable row level security;
 alter table uploaded_files enable row level security;
 alter table ai_jobs enable row level security;
 alter table ai_results enable row level security;
@@ -249,6 +298,8 @@ create policy "app_settings owner access" on app_settings for all using (auth.ui
 create policy "notification_settings owner access" on notification_settings for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "subjects owner access" on subjects for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "todos owner access" on todos for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "homeworks owner access" on homeworks for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "weekly_plans owner access" on weekly_plans for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "calendar_events owner access" on calendar_events for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "schedules owner access" on schedules for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "important_events owner access" on important_events for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
@@ -256,6 +307,7 @@ create policy "daily_plans owner access" on daily_plans for all using (auth.uid(
 create policy "study_logs owner access" on study_logs for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "subject_progress owner access" on subject_progress for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "understanding_scores owner access" on understanding_scores for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "study_metrics owner access" on study_metrics for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "uploaded_files owner access" on uploaded_files for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "ai_jobs owner access" on ai_jobs for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "ai_results owner access" on ai_results for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

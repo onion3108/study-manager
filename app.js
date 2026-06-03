@@ -1,6 +1,8 @@
 const DATA = window.STUDY_DATA;
 const STORAGE = {
   todos: "study-manager-v2-todos",
+  homeworks: "study-manager-v2-homeworks",
+  studyMetrics: "study-manager-v2-study-metrics",
   plans: "study-manager-v2-plans",
   jobs: "study-manager-v2-jobs",
   events: "study-manager-v2-events",
@@ -36,6 +38,7 @@ const routes = [
   { id: "home", label: "ホーム", icon: "home" },
   { id: "calendar", label: "カレンダー", icon: "calendar" },
   { id: "todo", label: "Todo", icon: "check" },
+  { id: "homework", label: "宿題", icon: "homework" },
   { id: "questions", label: "問題", icon: "book" },
   { id: "import", label: "AI取り込み", icon: "upload" },
   { id: "settings", label: "設定", icon: "settings" },
@@ -51,6 +54,8 @@ let state = {
   selectedYear: Number(DATA.today.slice(0, 4)),
   selectedMonth: Number(DATA.today.slice(5, 7)),
   todos: loadState(STORAGE.todos, DATA.todos),
+  homeworks: loadState(STORAGE.homeworks, seedHomeworks()),
+  studyMetrics: loadState(STORAGE.studyMetrics, {}),
   plans: loadState(STORAGE.plans, seedPlans()),
   jobs: loadState(STORAGE.jobs, []),
   events: loadState(STORAGE.events, DATA.events),
@@ -81,6 +86,7 @@ function renderAll() {
   renderHome();
   renderCalendar();
   renderTodoPage();
+  renderHomeworkPage();
   renderQuestions();
   renderImportCenter();
   renderSettings();
@@ -171,6 +177,8 @@ async function loadSupabaseData() {
     const hasRemoteTodos = Boolean(todoRows?.length);
     const appState = appRows?.app_state || {};
     if (appState.todos) state.todos = appState.todos;
+    if (appState.homeworks) state.homeworks = appState.homeworks;
+    if (appState.studyMetrics) state.studyMetrics = appState.studyMetrics;
     if (appState.plans) state.plans = appState.plans;
     if (appState.events) state.events = appState.events;
     if (appState.menus) state.menus = { ...DATA.menus, ...appState.menus };
@@ -217,6 +225,8 @@ function subscribeSupabaseChanges() {
 
 function cacheAllState() {
   saveLocalState(STORAGE.todos, state.todos);
+  saveLocalState(STORAGE.homeworks, state.homeworks);
+  saveLocalState(STORAGE.studyMetrics, state.studyMetrics);
   saveLocalState(STORAGE.plans, state.plans);
   saveLocalState(STORAGE.jobs, state.jobs);
   saveLocalState(STORAGE.events, state.events);
@@ -231,6 +241,8 @@ function cacheAllState() {
 function buildAppSnapshot() {
   return {
     todos: state.todos,
+    homeworks: state.homeworks,
+    studyMetrics: state.studyMetrics,
     plans: state.plans,
     jobs: state.jobs,
     events: state.events,
@@ -678,6 +690,10 @@ function renderHome() {
   const countdowns = getCountdowns(date).slice(0, 3);
   const menu = menuForDate(date);
   const counts = jobCounts();
+  const todaysHomeworks = homeworksForDate(date).filter((item) => !item.completed).slice(0, 6);
+  const overdue = overdueHomeworks(date).slice(0, 4);
+  const homeworkStats = homeworkStatsForWeek(weekStartDate(date));
+  const weeklyAgenda = weekDates(date).map((day) => ({ date: day, items: weeklyAgendaItems(day).slice(0, 4) }));
   const view = document.getElementById("home-view");
   view.innerHTML = `
     <div class="page-heading tight">
@@ -718,6 +734,28 @@ function renderHome() {
           <button class="ghost-button" data-route="todo" type="button">Todo管理</button>
         </div>
       </section>
+      <section class="panel homework-home">
+        <div class="panel-header compact">
+          <div><p class="section-kicker">宿題 / 回収</p><h2>今日の宿題</h2></div>
+          <button class="ghost-button compact-button" data-route="homework" type="button">宿題管理</button>
+        </div>
+        ${overdue.length ? `<div class="recovery-box"><strong>未回収の宿題が${overdue.length}つあります</strong><span>遅れても完了すればOK。今日中に1つ回収しよう。</span></div>` : ""}
+        <div class="homework-list compact-list">${[...overdue, ...todaysHomeworks].slice(0, 8).map(renderHomeworkItem).join("") || emptyText("今日の宿題はありません")}</div>
+      </section>
+      <section class="panel homework-stats-home">
+        <p class="section-kicker">今週の宿題達成度</p>
+        <h2>${homeworkStats.rate}%</h2>
+        <div class="homework-stat-row">
+          <span>完了 ${homeworkStats.completed}/${homeworkStats.total}</span>
+          <span>未回収 ${homeworkStats.overdue}</span>
+          <span>ペナルティ ${homeworkStats.penalty}</span>
+        </div>
+      </section>
+      <section class="panel weekly-home">
+        <p class="section-kicker">7日分</p>
+        <h2>一週間の予定</h2>
+        <div class="weekly-agenda">${weeklyAgenda.map(renderWeeklyAgendaDay).join("")}</div>
+      </section>
       <section class="panel info-panel events-home">
         <p class="section-kicker">カレンダー予定のみ</p>
         <h2>今日の予定</h2>
@@ -748,6 +786,7 @@ function renderHome() {
   renderPie("home-pie", ideal.blocks, "理想");
   renderLegend("home-legend", ideal.blocks);
   bindTodoCheckboxes(view);
+  bindHomeworkCheckboxes(view);
   bindClassCards(view);
   view.querySelector("#show-today-home").addEventListener("click", () => {
     state.homeDate = DATA.today;
@@ -1075,6 +1114,96 @@ function renderTodoPage() {
   bindTodoCheckboxes(view);
 }
 
+function renderHomeworkPage() {
+  const view = document.getElementById("homework-view");
+  const weekStart = weekStartDate(state.selectedDate || DATA.today);
+  const week = weekDates(weekStart);
+  const stats = homeworkStatsForWeek(weekStart);
+  view.innerHTML = `
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">Homework</p>
+        <h1>宿題管理</h1>
+      </div>
+      <div class="heading-actions">
+        <button class="ghost-button" id="homework-this-week" type="button">今週</button>
+      </div>
+    </div>
+    <div class="homework-page-grid">
+      <section class="panel homework-summary-panel">
+        <p class="section-kicker">今週の宿題達成度</p>
+        <h2>${stats.rate}%</h2>
+        <div class="metric-grid homework-metrics">
+          <div><span>今週</span><strong>${stats.total}個</strong></div>
+          <div><span>完了</span><strong>${stats.completed}個</strong></div>
+          <div><span>未完了</span><strong>${stats.open}個</strong></div>
+          <div><span>未回収</span><strong>${stats.overdue}個</strong></div>
+          <div><span>連続達成</span><strong>${stats.streak}日</strong></div>
+          <div><span>ペナルティ</span><strong>${stats.penalty}</strong></div>
+        </div>
+        ${stats.overdue ? `<div class="recovery-box"><strong>未回収の宿題が${stats.overdue}つあります</strong><span>今日中に1つ回収すると達成率が戻ります。</span></div>` : ""}
+      </section>
+      <section class="panel">
+        <div class="panel-header compact"><div><p class="section-kicker">追加</p><h2>宿題を登録</h2></div></div>
+        <form id="homework-form" class="todo-form">
+          <label>タイトル<input id="homework-title" required placeholder="数学 ワーク p.32〜35" /></label>
+          <label>教科<select id="homework-subject">${homeworkSubjects().map((subject) => `<option>${subject}</option>`).join("")}</select></label>
+          <label>詳細メモ<textarea id="homework-description" rows="3" placeholder="提出範囲、ページ、注意点"></textarea></label>
+          <div class="form-grid two">
+            <label>取り組む日<input id="homework-planned" type="date" value="${DATA.today}" /></label>
+            <label>期限<input id="homework-due" type="date" value="${DATA.today}" /></label>
+          </div>
+          <button class="primary-action full" type="submit">宿題を追加</button>
+        </form>
+      </section>
+      <section class="panel wide-panel">
+        <div class="panel-header compact">
+          <div><p class="section-kicker">${formatMonthDay(week[0])}〜${formatMonthDay(week[6])}</p><h2>一週間カレンダー</h2></div>
+        </div>
+        <div class="homework-week-grid">
+          ${week.map((date) => renderHomeworkDayColumn(date)).join("")}
+        </div>
+      </section>
+    </div>
+  `;
+  view.querySelector("#homework-this-week").addEventListener("click", () => {
+    state.selectedDate = DATA.today;
+    renderHomeworkPage();
+  });
+  view.querySelector("#homework-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    addHomeworkFromForm(view);
+  });
+  bindHomeworkCheckboxes(view);
+  bindHomeworkDateMoves(view);
+}
+
+function addHomeworkFromForm(root) {
+  const title = root.querySelector("#homework-title").value.trim();
+  if (!title) return;
+  const plannedDate = root.querySelector("#homework-planned").value || DATA.today;
+  const now = new Date().toISOString();
+  state.homeworks.unshift({
+    id: crypto.randomUUID(),
+    title,
+    subject: root.querySelector("#homework-subject").value,
+    description: root.querySelector("#homework-description").value.trim(),
+    dueDate: root.querySelector("#homework-due").value || plannedDate,
+    plannedDate,
+    weekStartDate: weekStartDate(plannedDate),
+    completed: false,
+    completedAt: null,
+    completedLate: false,
+    penaltyStatus: "none",
+    penaltyCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
+  saveState(STORAGE.homeworks, state.homeworks);
+  renderAll();
+  showToast(isSupabaseReady() ? "宿題を追加しました。Supabaseへ同期します" : "宿題をローカル保存しました。同期にはSupabaseログインが必要です");
+}
+
 function renderQuestions() {
   document.getElementById("questions-view").innerHTML = `
     <div class="page-heading"><div><p class="eyebrow">Questions</p><h1>問題</h1></div></div>
@@ -1362,6 +1491,12 @@ function renderScheduleEditor() {
       <button id="apply-template" class="ghost-button" type="button">テンプレートを適用</button>
       <button id="add-block" class="secondary-action" type="button">ブロック追加</button>
     </div>
+    <div class="quick-template-row">
+      <button class="choice-chip" data-quick-template="math" type="button">今日は数学多め</button>
+      <button class="choice-chip" data-quick-template="english" type="button">英語中心</button>
+      <button class="choice-chip" data-quick-template="balance" type="button">バランス型</button>
+    </div>
+    <div id="draft-pie" class="pie-chart draft-pie"></div>
     <div class="schedule-block-list">
       ${draft.blocks.map((block, index) => renderBlockEditor(block, index, draft.planType)).join("")}
     </div>
@@ -1380,11 +1515,32 @@ function renderScheduleEditor() {
     draft.blocks.push({ id: crypto.randomUUID(), category: "study", label: "新しい予定", startTime: "20:00", endTime: "21:00", achievementPercent: draft.planType === "actual" ? 80 : undefined });
     renderScheduleEditor();
   });
+  editor.querySelectorAll("[data-quick-template]").forEach((button) => {
+    button.addEventListener("click", () => {
+      applyQuickStudyTemplate(button.dataset.quickTemplate);
+      renderScheduleEditor();
+    });
+  });
   editor.querySelectorAll("[data-block-index]").forEach((row) => {
     const index = Number(row.dataset.blockIndex);
     row.querySelectorAll("input, select").forEach((input) => {
-      input.addEventListener("change", () => {
+      const update = () => {
         draft.blocks[index][input.dataset.field] = input.type === "number" ? Number(input.value) : input.value;
+        renderScheduleEditor();
+      };
+      input.addEventListener("change", update);
+      if (input.type === "range") input.addEventListener("input", update);
+    });
+    row.querySelectorAll("[data-adjust-minutes]").forEach((button) => {
+      button.addEventListener("click", () => {
+        adjustDraftBlockMinutes(index, Number(button.dataset.adjustMinutes));
+        renderScheduleEditor();
+      });
+    });
+    row.querySelectorAll("[data-quick-minutes]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setDraftBlockMinutes(index, Number(button.dataset.quickMinutes));
+        renderScheduleEditor();
       });
     });
     row.querySelector("[data-delete-block]").addEventListener("click", () => {
@@ -1393,6 +1549,7 @@ function renderScheduleEditor() {
     });
   });
   editor.querySelector("#save-schedule").addEventListener("click", saveScheduleDraft);
+  renderPie("draft-pie", normalizeBlocks(draft.blocks), draft.planType === "ideal" ? "理想" : "実際");
 }
 
 function saveScheduleDraft() {
@@ -1466,6 +1623,42 @@ function bindTodoCheckboxes(root) {
     checkbox.addEventListener("change", () => {
       state.todos = state.todos.map((todo) => (todo.id === checkbox.dataset.todoCheck ? { ...todo, completed: checkbox.checked } : todo));
       saveState(STORAGE.todos, state.todos);
+      renderAll();
+    });
+  });
+}
+
+function bindHomeworkCheckboxes(root) {
+  root.querySelectorAll("[data-homework-check]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const now = new Date().toISOString();
+      state.homeworks = state.homeworks.map((homework) => {
+        if (homework.id !== checkbox.dataset.homeworkCheck) return homework;
+        const completed = checkbox.checked;
+        const late = completed && isHomeworkOverdue(homework, DATA.today);
+        return {
+          ...homework,
+          completed,
+          completedAt: completed ? now : null,
+          completedLate: late,
+          penaltyStatus: completed ? (late ? "completedLate" : "none") : penaltyStatusFor(homework, DATA.today),
+          updatedAt: now,
+        };
+      });
+      saveState(STORAGE.homeworks, state.homeworks);
+      renderAll();
+    });
+  });
+}
+
+function bindHomeworkDateMoves(root) {
+  root.querySelectorAll("[data-homework-move]").forEach((select) => {
+    select.addEventListener("change", () => {
+      const now = new Date().toISOString();
+      state.homeworks = state.homeworks.map((homework) => homework.id === select.dataset.homeworkMove
+        ? { ...homework, plannedDate: select.value, weekStartDate: weekStartDate(select.value), updatedAt: now }
+        : homework);
+      saveState(STORAGE.homeworks, state.homeworks);
       renderAll();
     });
   });
@@ -1699,6 +1892,55 @@ function renderTodoItem(todo) {
   `;
 }
 
+function renderHomeworkItem(homework) {
+  const overdue = !homework.completed && isHomeworkOverdue(homework, DATA.today);
+  const late = homework.completedLate;
+  return `
+    <label class="homework-item ${homework.completed ? "completed" : ""} ${overdue ? "overdue" : ""}">
+      <input data-homework-check="${homework.id}" type="checkbox" ${homework.completed ? "checked" : ""} />
+      <span>
+        <span class="homework-title"><em>宿題</em>${escapeHtml(homework.title)}</span>
+        <span class="todo-meta">${escapeHtml(homework.subject || "その他")} / 予定 ${formatMonthDay(homework.plannedDate)} / 期限 ${formatMonthDay(homework.dueDate)}${overdue ? " / 未回収" : ""}${late ? " / 遅れて完了" : ""}</span>
+      </span>
+    </label>
+  `;
+}
+
+function renderHomeworkDayColumn(date) {
+  const items = state.homeworks.filter((homework) => homework.plannedDate === date || homework.dueDate === date);
+  return `
+    <section class="homework-day-card ${date === DATA.today ? "today" : ""}">
+      <div class="homework-day-head">
+        <strong>${weekdayLabel(date)}</strong>
+        <span>${formatMonthDay(date)}</span>
+      </div>
+      <div class="homework-list">
+        ${items.map((homework) => `
+          <div class="homework-week-item ${homework.completed ? "completed" : ""} ${isHomeworkOverdue(homework, DATA.today) && !homework.completed ? "overdue" : ""}">
+            ${renderHomeworkItem(homework)}
+            <select data-homework-move="${homework.id}">
+              ${weekDates(date).map((day) => `<option value="${day}" ${homework.plannedDate === day ? "selected" : ""}>${weekdayLabel(day)} ${formatMonthDay(day)}</option>`).join("")}
+            </select>
+          </div>
+        `).join("") || emptyText("予定なし")}
+      </div>
+    </section>
+  `;
+}
+
+function renderWeeklyAgendaDay(day) {
+  const date = typeof day === "string" ? day : day.date;
+  const items = Array.isArray(day.items) ? day.items : weeklyAgendaItems(date);
+  return `
+    <div class="weekly-agenda-day ${date === DATA.today ? "today" : ""}">
+      <strong>${date === DATA.today ? "今日" : weekdayLabel(date)} <span>${formatMonthDay(date)}</span></strong>
+      <div>
+        ${items.length ? items.map((item) => `<span class="agenda-chip ${item.className}"><b>${item.type}</b>${escapeHtml(item.label)}</span>`).join("") : '<span class="muted">予定なし</span>'}
+      </div>
+    </div>
+  `;
+}
+
 function renderVerticalClassCard(entry, date = state.homeDate) {
   return `
     <button class="class-row" data-class-key="${date}|${entry.weekday}|${entry.period}" type="button">
@@ -1782,16 +2024,52 @@ function renderMetric(category, ideal, actual) {
 }
 
 function renderBlockEditor(block, index, planType) {
+  const duration = durationMinutes(block.startTime, block.endTime);
   return `
     <div class="block-editor" data-block-index="${index}">
       <select data-field="category">${Object.entries(DATA.categories).map(([key, meta]) => `<option value="${key}" ${block.category === key ? "selected" : ""}>${meta.label}</option>`).join("")}</select>
       <input data-field="label" value="${escapeAttr(block.label)}" />
       <input data-field="startTime" type="time" value="${block.startTime}" />
       <input data-field="endTime" type="time" value="${block.endTime}" />
-      ${planType === "actual" ? `<input data-field="achievementPercent" type="number" min="0" max="100" value="${block.achievementPercent ?? 80}" aria-label="達成度" />` : ""}
+      <div class="duration-controls">
+        <button class="icon-button" data-adjust-minutes="-10" type="button">-10</button>
+        <span>${duration}分</span>
+        <button class="icon-button" data-adjust-minutes="10" type="button">+10</button>
+        ${[15, 30, 45, 60].map((minutes) => `<button class="choice-chip mini-chip" data-quick-minutes="${minutes}" type="button">${minutes}分</button>`).join("")}
+      </div>
+      ${planType === "actual" ? `<label class="understanding-slider"><span>理解度 ${block.achievementPercent ?? 80}%</span><input data-field="achievementPercent" type="range" min="0" max="100" step="5" value="${block.achievementPercent ?? 80}" aria-label="理解度" /></label>` : ""}
       <button data-delete-block class="icon-button" type="button">削除</button>
     </div>
   `;
+}
+
+function adjustDraftBlockMinutes(index, delta) {
+  const block = state.scheduleDraft.blocks[index];
+  const minutes = Math.max(15, durationMinutes(block.startTime, block.endTime) + delta);
+  setDraftBlockMinutes(index, minutes);
+}
+
+function setDraftBlockMinutes(index, minutes) {
+  const block = state.scheduleDraft.blocks[index];
+  const start = timeToMinutes(block.startTime);
+  block.endTime = minutesToTime((start + minutes) % 1440);
+}
+
+function applyQuickStudyTemplate(type) {
+  const date = state.scheduleDraft.date;
+  const planType = state.scheduleDraft.planType;
+  const base = cloneBlocks(DATA.scheduleTemplates[0].blocks);
+  const extra = type === "math"
+    ? [{ category: "study", label: "数学多め", startTime: "19:30", endTime: "21:30" }]
+    : type === "english"
+      ? [{ category: "study", label: "英語中心", startTime: "19:30", endTime: "21:30" }]
+      : [{ category: "study", label: "バランス復習", startTime: "19:30", endTime: "21:00" }];
+  state.scheduleDraft = {
+    ...state.scheduleDraft,
+    date,
+    planType,
+    blocks: [...base.filter((block) => block.label !== "復習・問題"), ...extra].map((block) => ({ ...block, id: crypto.randomUUID(), achievementPercent: planType === "actual" ? 80 : block.achievementPercent })),
+  };
 }
 
 function renderPie(targetId, blocks, label) {
@@ -2005,6 +2283,97 @@ function todosForDate(date) {
   return state.todos.filter((todo) => isTodoActiveOn(todo, date));
 }
 
+function homeworkSubjects() {
+  return ["国語", "数学", "英語", "理科", "社会", "その他"];
+}
+
+function seedHomeworks() {
+  return [
+    createHomeworkSeed("数学 ワーク p32〜35", "数学", "問題を解いて丸つけまで", DATA.today, DATA.today),
+    createHomeworkSeed("英単語 50個", "英語", "小テスト準備", DATA.today, nextDate(DATA.today, 1)),
+  ];
+}
+
+function createHomeworkSeed(title, subject, description, plannedDate, dueDate) {
+  const now = new Date().toISOString();
+  return {
+    id: `homework-${title}`,
+    title,
+    subject,
+    description,
+    dueDate,
+    plannedDate,
+    weekStartDate: weekStartDate(plannedDate),
+    completed: false,
+    completedAt: null,
+    completedLate: false,
+    penaltyStatus: "none",
+    penaltyCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function homeworksForDate(date) {
+  return state.homeworks.filter((homework) => !homework.completed && (homework.plannedDate === date || homework.dueDate === date));
+}
+
+function overdueHomeworks(date = DATA.today) {
+  return state.homeworks.filter((homework) => !homework.completed && isHomeworkOverdue(homework, date));
+}
+
+function isHomeworkOverdue(homework, date = DATA.today) {
+  const basis = homework.dueDate || homework.plannedDate;
+  return Boolean(basis && dayDiff(basis, date) > 0);
+}
+
+function penaltyStatusFor(homework, date = DATA.today) {
+  return isHomeworkOverdue(homework, date) ? "overdue" : "none";
+}
+
+function homeworkStatsForWeek(startDate) {
+  const week = weekDates(startDate);
+  const weekSet = new Set(week);
+  const items = state.homeworks.filter((homework) => weekSet.has(homework.plannedDate) || weekSet.has(homework.dueDate));
+  const completed = items.filter((homework) => homework.completed).length;
+  const overdue = items.filter((homework) => !homework.completed && isHomeworkOverdue(homework, DATA.today)).length;
+  const penalty = items.reduce((sum, homework) => sum + (homework.completed ? 0 : isHomeworkOverdue(homework, DATA.today) ? Math.max(1, homework.penaltyCount || 1) : 0), 0);
+  const total = items.length;
+  return {
+    total,
+    completed,
+    open: total - completed,
+    overdue,
+    penalty,
+    rate: total ? Math.round((completed / total) * 100) : 0,
+    streak: homeworkStreak(),
+  };
+}
+
+function homeworkStreak() {
+  let streak = 0;
+  for (let offset = 0; offset < 30; offset += 1) {
+    const date = nextDate(DATA.today, -offset);
+    const items = state.homeworks.filter((homework) => homework.plannedDate === date || homework.dueDate === date);
+    if (!items.length) continue;
+    if (items.every((homework) => homework.completed)) streak += 1;
+    else break;
+  }
+  return streak;
+}
+
+function weeklyAgendaItems(date) {
+  const eventItems = eventsOnDate(date).map((event) => ({ type: "予定", label: event.title, className: "agenda-event" }));
+  const todoItems = todosForDate(date).filter((todo) => !todo.completed).map((todo) => ({ type: "Todo", label: todo.title, className: "agenda-todo" }));
+  const homeworkItems = homeworksForDate(date).map((homework) => ({ type: "宿題", label: homework.title, className: "agenda-homework" }));
+  const jobItems = date === DATA.today && jobCounts().pending ? [{ type: "AI", label: `AI処理待ち ${jobCounts().pending}件`, className: "agenda-ai" }] : [];
+  return [...homeworkItems, ...todoItems, ...eventItems, ...jobItems];
+}
+
+function weekStartDate(date) {
+  return weekDates(date)[0];
+}
+
 function timetableForDate(date) {
   const weekday = dayOfWeekMondayBase(date);
   return state.timetable.filter((entry) => entry.weekday === weekday);
@@ -2133,6 +2502,11 @@ function timeToMinutes(time) {
   return hour * 60 + minute;
 }
 
+function minutesToTime(minutes) {
+  const normalized = ((minutes % 1440) + 1440) % 1440;
+  return `${String(Math.floor(normalized / 60)).padStart(2, "0")}:${String(normalized % 60).padStart(2, "0")}`;
+}
+
 function parseDate(date) {
   return new Date(`${date}T00:00:00+09:00`);
 }
@@ -2196,6 +2570,7 @@ function icon(name) {
     home: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3V10.5Z"/></svg>',
     calendar: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2v3M17 2v3M4 8h16M5 4h14a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>',
     check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+    homework: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l3 3v18H6z"/><path d="M14 3v6h6"/><path d="M9 13h6M9 17h6"/></svg>',
     book: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H21"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H21v20H6.5A2.5 2.5 0 0 1 4 19.5v-15Z"/></svg>',
     upload: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>',
     settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2 2 0 1 1-2.83 2.83l-.04-.04A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1 .6 1.8 1.8 0 0 0-.5 1.3V21a2 2 0 1 1-4 0v-.08A1.8 1.8 0 0 0 8.4 19.4a1.8 1.8 0 0 0-1.98.36l-.04.04a2 2 0 1 1-2.83-2.83l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.3-1H3a2 2 0 1 1 0-4h.08A1.8 1.8 0 0 0 4.6 8.4a1.8 1.8 0 0 0-.36-1.98l-.04-.04a2 2 0 1 1 2.83-2.83l.04.04A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1-.6 1.8 1.8 0 0 0 .5-1.3V3a2 2 0 1 1 4 0v.08A1.8 1.8 0 0 0 15.6 4.6a1.8 1.8 0 0 0 1.98-.36l.04-.04a2 2 0 1 1 2.83 2.83l-.04.04A1.8 1.8 0 0 0 19.4 9c.18.5.55.9 1.05 1H21a2 2 0 1 1 0 4h-.08A1.8 1.8 0 0 0 19.4 15Z"/></svg>',

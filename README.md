@@ -120,6 +120,18 @@ Web側にはPublishable keyまたはLegacy anon keyだけを設定します。se
 - 設定、通知設定、Ollamaモデル名
 - 献立などアプリ内の保存データ
 
+## 宿題と一週間予定
+
+ホームには「今日の宿題」「未回収の宿題」「一週間の予定」「今週の宿題達成度」が表示されます。Todoは普通のやること、宿題は学校の課題・提出物・毎日の学習計画として別に管理します。
+
+宿題ページでは、教科、タイトル、詳細メモ、期限、取り組む予定日を登録できます。登録した宿題は一週間カレンダーに表示され、チェックすると完了になります。期限を過ぎた未完了宿題は未回収としてホームと達成度カードに表示されます。遅れて完了した宿題は`completedLate`として記録されます。
+
+宿題データは既存の`app_settings.app_state`同期に含まれるため、Supabaseログイン中はPCとスマホで同じ状態を共有できます。`supabase/schema.sql`には将来の正規テーブル運用向けに`homeworks`、`weekly_plans`、`study_metrics`も追加しています。
+
+## 円グラフ入力
+
+24時間画面の編集モーダルでは、テンプレート、+/- 10分、15/30/45/60分のクイック入力、理解度スライダー、プレビュー円グラフを使えます。保存するとlocalStorageへ保存され、Supabaseログイン中は`app_settings.app_state`へ同期されます。
+
 ## WebサイトでAI依頼を作る方法
 
 1. GitHub PagesのWebサイトでSupabaseへログインします。
@@ -147,6 +159,8 @@ copy env.example .env
 ```env
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=elyza:jp8b
+OCR_USE_GPU=auto
+OCR_LANG=japan
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
@@ -154,6 +168,8 @@ SUPABASE_STORAGE_BUCKET=study-files
 ```
 
 service role keyはローカルworkerだけで使います。`.env`は`.gitignore`で除外されています。
+
+OCRは`OCR_USE_GPU`で切り替えできます。`false`ならCPU固定、`true`ならGPUを試行、`auto`ならCUDA/Paddle GPUの可否を見て自動判定します。GPU初期化に失敗してもworkerはCPU OCRへフォールバックし、起動ログと`ai_jobs.error_message`で確認できます。
 
 1回だけ処理:
 

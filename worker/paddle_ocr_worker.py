@@ -1,22 +1,78 @@
 import json
+import os
 import tempfile
 from pathlib import Path
 
 _ocr = None
+_ocr_device = "unknown"
+
+
+def env_flag(name, default="auto"):
+    return os.environ.get(name, default).strip().lower()
+
+
+def is_gpu_requested():
+    value = env_flag("OCR_USE_GPU", "auto")
+    return value in {"1", "true", "yes", "on", "gpu", "auto"}
+
+
+def is_gpu_forced_off():
+    return env_flag("OCR_USE_GPU", "auto") in {"0", "false", "no", "off", "cpu"}
+
+
+def paddle_cuda_available():
+    try:
+      import paddle
+
+      return bool(paddle.device.is_compiled_with_cuda())
+    except Exception:
+      return False
+
+
+def ocr_language():
+    return os.environ.get("OCR_LANG") or os.environ.get("OCR_LANGUAGE") or "japan"
+
+
+def init_paddle_ocr(use_gpu):
+    from paddleocr import PaddleOCR
+
+    kwargs = {
+        "lang": ocr_language(),
+        "text_recognition_model_name": "japan_PP-OCRv3_mobile_rec",
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": False,
+        "use_textline_orientation": False,
+    }
+    if use_gpu:
+        try:
+            return PaddleOCR(**kwargs, device=os.environ.get("OCR_DEVICE", "gpu:0"))
+        except TypeError:
+            return PaddleOCR(**kwargs, use_gpu=True)
+    try:
+        return PaddleOCR(**kwargs, device="cpu")
+    except TypeError:
+        return PaddleOCR(**kwargs, use_gpu=False)
 
 
 def get_ocr():
-    global _ocr
+    global _ocr, _ocr_device
     if _ocr is None:
-        from paddleocr import PaddleOCR
-
-        _ocr = PaddleOCR(
-            lang="japan",
-            text_recognition_model_name="japan_PP-OCRv3_mobile_rec",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        )
+        wants_gpu = is_gpu_requested() and not is_gpu_forced_off()
+        can_try_gpu = wants_gpu and paddle_cuda_available()
+        if can_try_gpu:
+            try:
+                _ocr = init_paddle_ocr(use_gpu=True)
+                _ocr_device = "gpu"
+                print("PaddleOCR initialized with GPU")
+                return _ocr
+            except Exception as error:
+                print(f"PaddleOCR GPU init failed; falling back to CPU: {error}")
+        else:
+            reason = "disabled by OCR_USE_GPU" if is_gpu_forced_off() else "CUDA/Paddle GPU not available"
+            print(f"PaddleOCR GPU not used: {reason}")
+        _ocr = init_paddle_ocr(use_gpu=False)
+        _ocr_device = "cpu"
+        print("PaddleOCR initialized with CPU")
     return _ocr
 
 
@@ -143,7 +199,8 @@ def run_paddle_ocr(path, source_name):
     blocks = [block for page in pages for block in page["blocks"]]
     return {
         "engine": "PaddleOCR",
-        "language": "japan",
+        "language": ocr_language(),
+        "device": _ocr_device,
         "source_name": source_name,
         "page_count": len(pages),
         "block_count": len(blocks),

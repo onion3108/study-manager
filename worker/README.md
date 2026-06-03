@@ -31,6 +31,8 @@ copy env.example .env
 ```env
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=elyza:jp8b
+OCR_USE_GPU=auto
+OCR_LANG=japan
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY
@@ -52,6 +54,33 @@ python worker/run_worker.py --once
 ```powershell
 python worker/run_worker.py --interval 20 --limit 3
 ```
+
+起動ログに`OCR_USE_GPU`、`ocr_lang`、`paddle_cuda`が表示されます。GPU初期化に失敗した場合もworker全体は落とさず、CPU OCRへフォールバックします。
+
+## GPU OCR
+
+CPU固定:
+
+```powershell
+$env:OCR_USE_GPU="false"
+python worker/run_worker.py --once
+```
+
+GPUを試す:
+
+```powershell
+$env:OCR_USE_GPU="true"
+python worker/run_worker.py --once
+```
+
+自動判定:
+
+```powershell
+$env:OCR_USE_GPU="auto"
+python worker/run_worker.py --once
+```
+
+GPU OCRにはNVIDIA GPU、対応CUDA、GPU対応のPaddlePaddle/PaddleOCR環境が必要です。GPU版が入っていない、CUDAが使えない、またはPaddleOCR初期化に失敗した場合は、ログに理由を出してCPUで処理を続けます。
 
 ## Ollama確認
 

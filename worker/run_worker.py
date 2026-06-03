@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from ollama_worker import DEFAULT_OLLAMA_MODEL, generate_study_result
-from paddle_ocr_worker import run_paddle_ocr
+from paddle_ocr_worker import env_flag, paddle_cuda_available, run_paddle_ocr
 
 
 SUPPORTED_JOB_TYPES = {
@@ -50,6 +50,8 @@ class SupabaseAiWorker:
         self.service_key = required_env("SUPABASE_SERVICE_ROLE_KEY")
         self.bucket = os.environ.get("SUPABASE_STORAGE_BUCKET", "study-files")
         self.model_name = os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+        self.ocr_use_gpu = env_flag("OCR_USE_GPU", "auto")
+        self.ocr_lang = os.environ.get("OCR_LANG") or os.environ.get("OCR_LANGUAGE") or "japan"
         self.supabase = create_client(self.url, self.service_key)
 
     def fetch_pending_jobs(self, limit):
@@ -223,7 +225,8 @@ def main():
     args = parser.parse_args()
 
     worker = SupabaseAiWorker()
-    print(f"Study Manager worker started. bucket={worker.bucket} model={worker.model_name}")
+    gpu_status = "available" if paddle_cuda_available() else "not available"
+    print(f"Study Manager worker started. bucket={worker.bucket} model={worker.model_name} ocr_lang={worker.ocr_lang} OCR_USE_GPU={worker.ocr_use_gpu} paddle_cuda={gpu_status}")
     while True:
         worker.run_once(args.limit)
         if args.once:
